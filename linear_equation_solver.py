@@ -1,11 +1,12 @@
 import re
 import tkinter as tk
-import subprocess
-import sys
 import ctypes
+import os
 from enum import Enum
 from typing import Tuple, Callable
 from tkinter import ttk, filedialog, scrolledtext, messagebox
+
+# large refactor needed, no time for that right now
 
 class LibraryEnum(Enum):
     C_LIB = 1
@@ -15,12 +16,13 @@ class LibraryEnum(Enum):
 class LinearEquationSolver:
     def __init__(self, num_threads : int, lib : LibraryEnum):
         self._num_threads = num_threads
+        dir = os.path.dirname(os.path.abspath(__file__))
         if lib == LibraryEnum.C_LIB:
-            self._solver_dll = ctypes.cdll.LoadLibrary(r"./Lib/LinSysSolverLib.dll")
+            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib.dll")
         elif lib == LibraryEnum.ASM_LIB:
-            print("ASM")
+            raise NotImplementedError("ASM library not implemented.")
         else:
-            print("none?")
+            raise ValueError("Invalid library selected.")
 
         self._solver_dll.solve_linear_system.argtypes = [
             ctypes.POINTER(ctypes.c_double), 
@@ -45,11 +47,29 @@ class LinearEquationSolver:
         DoubleArrayType = ctypes.c_double * (sizeX * sizeY)
         c_matrix = DoubleArrayType(*flattened_data)
 
-        res = self._solver_dll.solve_linear_system(c_matrix, sizeY, sizeX)
+        sol = self._solver_dll.solve_linear_system(c_matrix, sizeY, sizeX)
+        flattened_result = list(c_matrix)
         
-        # TODO IMPLEMENT ERROR HANDLING AND SOLVING AND DISPLAYING DATA, THEN ADD MULTITHREADING AND ASSEMBLY LIB
+        if sol == 0:
+            raise ValueError("System has no solutions.")
+        elif sol == 1:
+            deflated_data = self._deflaten_matrix(flattened_result, sizeX)
+            return deflated_data
+        elif sol == 2:
+            raise ValueError("System has infinite solutions.")
+        else:
+            raise ValueError("Unknown error.")
+    
+    def solve_with_variables(self, matrix_data : list, variables : list) -> list:
+        result = self.solve(matrix_data)
+        return self._result_to_string(result, variables)
 
-        updated_data = list(c_matrix)
+    def _deflaten_matrix(self, matrix_data : list, sizeX : int) -> list:
+        deflated_data = []
+        for i in range(0, len(matrix_data), sizeX):
+            deflated_data.append(matrix_data[i:i + sizeX])
+
+        return deflated_data
 
 def parse_linear_equation(equation : str) -> dict:
     equation = equation.replace(" ", "")
@@ -101,30 +121,25 @@ def parse_linear_equations(equations : str) -> list:
     equations = equations.split('\n')
     equations = [line for line in equations if line.strip()]
     
-    parsed = []
-    for equation in equations:
-        parsed.append(parse_linear_equation(equation))
-    
-    return parsed
+    return [parse_linear_equation(eq) for eq in equations]
 
 
 def equations_to_matrix(equations) :
-    variables = set()
-    for eq in equations:
-        for var in eq.keys():
-            if var != '':
-                variables.add(var)
-    variables = sorted(variables)
+    # Extract and sort unique variables from the equations
+    variables = sorted({var for eq in equations for var in eq.keys() if var})
 
+    # Initialize the matrix
     matrix = []
+
+    # Convert each equation to a row in the matrix
     for eq in equations:
-        row = [0] * (len(variables) + 1)
+        row = [0] * (len(variables) + 1)  # Initialize a row with zeros
         for var, coef in eq.items():
             if var == '':
-                row[-1] = -coef
+                row[-1] = -coef  # Constant term goes to the last position
             else:
                 idx = variables.index(var)
-                row[idx] = coef
+                row[idx] = coef  # Variable coefficient goes to the correct position
 
         matrix.append(row)
 
@@ -143,7 +158,7 @@ class MenuFrame(ttk.Frame):
         self.titleLabel.pack(fill='x',  padx=padding[0], pady=padding[1])
 
 
-class RadioFrame(MenuFrame):  
+class RadioFrame(MenuFrame):
     def __init__(self, parent : tk.Widget,
                  title : str,
                  radio_options : Tuple[Tuple[str, Callable[[], None]], ...],
@@ -153,13 +168,10 @@ class RadioFrame(MenuFrame):
         if not radio_options:
             raise ValueError("radio_options cannot be empty.")
 
-        # init frame
         super().__init__(parent, title, padding, title_font)
 
-        # set default value
         self.radioVar = tk.StringVar(value=radio_options[0][0])
         
-        # create radio buttons
         for name, callback in radio_options:
             self._create_radiobutton(name, callback, padding)
 
@@ -186,8 +198,7 @@ class FileInputFrame(MenuFrame):
                          padding=padding,
                          title_font=title_font)
 
-        self.file_path = tk.StringVar()
-        self.file_path.set("")
+        self.file_path = tk.StringVar(value="")
 
         self.file_entry = ttk.Entry(self, textvariable=self.file_path)
         self.file_entry.pack(fill='x', padx=pad[0], pady=pad[1])
@@ -205,7 +216,7 @@ class FileInputFrame(MenuFrame):
     def get_file_path(self) -> str:
         return self.file_path.get()
 
-    def deacitvate(self):
+    def deactivate(self):
         self.file_button.config(state='disabled')
         self.file_entry.config(state='disabled')
 
@@ -223,7 +234,7 @@ class TextInputFrame(MenuFrame):
 
         self.text = scrolledtext.ScrolledText(self, width=30, height=10)
         self.text.pack(fill='both', 
-                       padx=padding[0], pady=padding[1], 
+                       padx=padding[0], pady=padding[1],
                        expand=True)
 
     def get_text(self) -> str:
@@ -233,7 +244,7 @@ class TextInputFrame(MenuFrame):
         self.text.config(state='normal')
         self.text.config(bg='white')
 
-    def deacitvate(self):
+    def deactivate(self):
         self.text.config(state='disabled')
         self.text.config(bg='lightgray')
 
@@ -266,11 +277,11 @@ class MatrixInputFrame(MenuFrame):
 
     def _activate_file_input(self):
         self.file_input_frame.activate()
-        self.text_input_frame.deacitvate()
+        self.text_input_frame.deactivate()
 
     def _activate_text_input(self):
         self.text_input_frame.activate()
-        self.file_input_frame.deacitvate()
+        self.file_input_frame.deactivate()
 
     def get_raw_input(self) -> str:
         selected_mode = self.src_selection.get_selected()
@@ -282,8 +293,8 @@ class MatrixInputFrame(MenuFrame):
             raise ValueError("Invalid source type.")
         
     def _get_file_input(self) -> str:
-        file_path = self.file_input_frame.get_file_path()
         try:
+            file_path = self.file_input_frame.get_file_path()
             with open(file_path, "r", encoding='utf8') as file:
                 content = file.read()
                 return content
@@ -300,7 +311,7 @@ class EquationResultFrame(MenuFrame):
 
         self._res_area = scrolledtext.ScrolledText(self, width=30, height=10)
         self._res_area.pack(fill='both', padx=10, pady=10, expand=True)
-        self._res_area.config(state='disabled')
+        self._disable_result_field()
 
     def set_result(self, result : str):
         self._enable_result_field()
@@ -340,7 +351,7 @@ class ConfigFrame(MenuFrame):
         thr_num_label = ttk.Label(thread_num_frame, text="Number of threads:")
         thr_num_label.pack(side='left', padx=10, pady=10)
 
-        validation = lambda x: x == "" or (x.isdigit() and 1 <= int(x) <= 65)
+        validation = lambda x: x == "" or (x.isdigit() and 1 <= int(x) <= 64)
         self.thr_num_spinner = ttk.Spinbox(
             thread_num_frame,
             from_=1,
@@ -358,7 +369,7 @@ class ConfigFrame(MenuFrame):
 
 
     def _get_num_threads(self) -> int:
-        return self.thr_num_spinner.get()
+        return int(self.thr_num_spinner.get())
     
     def _get_library(self) -> LibraryEnum:
         selected = self._library_selection.get_selected()
@@ -369,13 +380,8 @@ class ConfigFrame(MenuFrame):
         else:
             raise ValueError("Invalid library selected.")
         
-
     def _run_clicked(self):
         num_threads = self._get_num_threads()
-        
-        if not num_threads.isdigit():
-            return
-
         selected_library = self._get_library()
         self._on_run(num_threads, selected_library)
 
@@ -403,28 +409,37 @@ class MainApp(tk.Tk):
                                 expand = True, padx=pad_x, pady=pad_y)
 
     def _run(self, num_threads : int, library : LibraryEnum):
-        raw_equations : str
         try :
             raw_equations  = self._input_frame.get_raw_input()
+            equations = parse_linear_equations(raw_equations)
+
+            eq_matrix, var = equations_to_matrix(equations)
+            
+            solver = LinearEquationSolver(num_threads, library)
+            result = solver.solve(eq_matrix)
+
+            result = self._result_string(result, var)
+            self._result_frame.set_result(result)
+
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return
         except FileNotFoundError as e:
             messagebox.showerror("Error", e)
             return
 
-        equations = []
-        try:
-            equations = parse_linear_equations(raw_equations)
-        except ValueError as e:
-            messagebox.showerror("Error", str(e))
-            return
-        
-        eq_matrix, var = equations_to_matrix(equations)
-        if len(var) < 2:
-            self._result_frame.set_result(var[0] + " = " + str(eq_matrix[0][-1]))
+    # refactor needed
+    def _result_string(self, result : list, variables : list) -> str:
+        result_str = ""
+        for var in variables:
+            result_str += f"{var} = {result[variables.index(var)][-1]}\n"
+        return result_str
+
+    def _quit(self):
+        self.quit()
+        self.destroy()
 
 
 if __name__ == "__main__":
-    if sys.executable.endswith("python.exe"):
-        subprocess.run([sys.executable.replace("python.exe", "pythonw.exe"), *sys.argv])
-
     app = MainApp("Linear equation system solver", (600, 400))
     app.mainloop()

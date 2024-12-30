@@ -42,6 +42,7 @@ static inline void swap_rows(double* matrix, int sizeX, int rowA, int rowB, int 
     }
 }
 
+
 static bool has_solutions(double* matrix, int rows, int cols)
 {
     int var_num = cols - 1;
@@ -136,11 +137,15 @@ static void eliminate_single_thread(double* matrix, int rows, int cols, int pivo
 // Returns:
 //  - 0: system has no solution,
 //  - 1: system has 1 solution,
-//  - 2: system has infinite number of solutions.
+//  - 2: system has infinite number of solutions,
 __declspec(dllexport)
 int solve_linear_system(double* matrix, int rows, int cols)
 {
     int variables_num = cols - 1;
+
+    if (variables_num < rows) {
+
+    }
 
     for (int row = 0; row < variables_num; row++)
     {
