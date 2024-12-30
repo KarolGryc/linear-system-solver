@@ -2,11 +2,54 @@ import re
 import tkinter as tk
 import subprocess
 import sys
+import ctypes
 from enum import Enum
 from typing import Tuple, Callable
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 
+class LibraryEnum(Enum):
+    C_LIB = 1
+    ASM_LIB = 2
 
+
+class LinearEquationSolver:
+    def __init__(self, num_threads : int, lib : LibraryEnum):
+        self._num_threads = num_threads
+        if lib == LibraryEnum.C_LIB:
+            self._solver_dll = ctypes.cdll.LoadLibrary(r"./Lib/LinSysSolverLib.dll")
+        elif lib == LibraryEnum.ASM_LIB:
+            print("ASM")
+        else:
+            print("none?")
+
+        self._solver_dll.solve_linear_system.argtypes = [
+            ctypes.POINTER(ctypes.c_double), 
+            ctypes.c_int,
+            ctypes.c_int
+        ]
+        self._solver_dll.solve_linear_system.restype = ctypes.c_int
+
+    def _flatten_matrix(self, matrix_data : list) -> list:
+        flattened_data = []
+        for row in matrix_data:
+            flattened_data.extend(row)
+
+        return flattened_data
+
+    def solve(self, matrix_data : list) -> list:
+        sizeY = len(matrix_data)
+        sizeX = len(matrix_data[0])
+
+        flattened_data = self._flatten_matrix(matrix_data)
+
+        DoubleArrayType = ctypes.c_double * (sizeX * sizeY)
+        c_matrix = DoubleArrayType(*flattened_data)
+
+        res = self._solver_dll.solve_linear_system(c_matrix, sizeY, sizeX)
+        
+        # TODO IMPLEMENT ERROR HANDLING AND SOLVING AND DISPLAYING DATA, THEN ADD MULTITHREADING AND ASSEMBLY LIB
+
+        updated_data = list(c_matrix)
 
 def parse_linear_equation(equation : str) -> dict:
     equation = equation.replace(" ", "")
@@ -270,11 +313,6 @@ class EquationResultFrame(MenuFrame):
 
     def _disable_result_field(self):
         self._res_area.config(state='disabled')
-
-
-class LibraryEnum(Enum):
-    C_LIB = 1
-    ASM_LIB = 2
 
 
 class ConfigFrame(MenuFrame):
