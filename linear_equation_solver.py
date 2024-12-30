@@ -1,8 +1,11 @@
 import re
 import tkinter as tk
+import subprocess
+import sys
 from enum import Enum
 from typing import Tuple, Callable
 from tkinter import ttk, filedialog, scrolledtext, messagebox
+
 
 
 def parse_linear_equation(equation : str) -> dict:
@@ -60,7 +63,6 @@ def parse_linear_equations(equations : str) -> list:
         parsed.append(parse_linear_equation(equation))
     
     return parsed
-
 
 
 def equations_to_matrix(equations) :
@@ -238,7 +240,7 @@ class MatrixInputFrame(MenuFrame):
         
     def _get_file_input(self) -> str:
         file_path = self.file_input_frame.get_file_path()
-        try : 
+        try:
             with open(file_path, "r", encoding='utf8') as file:
                 content = file.read()
                 return content
@@ -383,5 +385,8 @@ class MainApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    if sys.executable.endswith("python.exe"):
+        subprocess.run([sys.executable.replace("python.exe", "pythonw.exe"), *sys.argv])
+
     app = MainApp("Linear equation system solver", (600, 400))
     app.mainloop()
