@@ -17,6 +17,7 @@ static inline double* at(double* matrix, int sizeX, int row, int col)
     return &matrix[sizeX * row + col];
 }
 
+
 static inline double val_at(double* matrix, int sizeX, int row, int col)
 {
     return matrix[sizeX * row + col];
