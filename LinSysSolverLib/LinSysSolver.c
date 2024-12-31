@@ -43,7 +43,7 @@ static inline void swap_rows(double* matrix, int sizeX, int rowA, int rowB, int 
 }
 
 
-static bool has_solutions(double* matrix, int rows, int cols)
+static bool is_solvable(double* matrix, int rows, int cols)
 {
     int var_num = cols - 1;
 
@@ -88,23 +88,28 @@ static inline bool row_contains_only_zeros(double* matrix, int cols, int rowIdx)
     return true;
 }
 
+#define NO_SOLUTIONS 0
+#define ONE_SOLUTION 1
+#define INFINITE_SOLUTIONS 2
+
 static int solutions_in_system(double* matrix, int rows, int cols)
 {
-    if (!has_solutions(matrix, rows, cols))
+    int variables_num = cols - 1;
+
+    if (!is_solvable(matrix, rows, cols))
     {
-        return 0;
+        return variables_num > rows ? INFINITE_SOLUTIONS : NO_SOLUTIONS;
     }
 
-    int variables_num = cols - 1;
     for (int row = 0; row < variables_num; row++)
     {
         if (row_contains_only_zeros(matrix, cols, row))
         {
-            return 2;
+            return INFINITE_SOLUTIONS;
         }
     }
 
-    return 1;
+    return ONE_SOLUTION;
 }
 
 

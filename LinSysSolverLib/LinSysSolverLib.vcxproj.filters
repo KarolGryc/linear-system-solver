@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="LinSysSolver.cpp">
+    <ClCompile Include="LinSysSolver.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
