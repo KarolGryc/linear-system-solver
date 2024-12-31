@@ -19,6 +19,8 @@ class LibraryEnum(Enum):
 class LinearEquationSolver:
     def __init__(self, num_threads : int, lib : LibraryEnum):
         self._num_threads = num_threads
+        
+        # load the library, move to separate function
         dir = os.path.dirname(os.path.abspath(__file__))
         if lib == LibraryEnum.C_LIB:
             self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib\x64\Release\LinSysSolverLib.dll")
@@ -29,6 +31,7 @@ class LinearEquationSolver:
 
         self._solver_dll.solve_linear_system.argtypes = [
             ctypes.POINTER(ctypes.c_double), 
+            ctypes.c_int,
             ctypes.c_int,
             ctypes.c_int
         ]
@@ -44,19 +47,18 @@ class LinearEquationSolver:
         else:
             return "Unknown error."
 
-    def solve(self, matrix : list):
-        # convert matrix to numpy array
-        np_matrix = np.array(matrix, dtype=np.float64)
-        original_shape = np_matrix.shape
-        rows, cols = np_matrix.shape
+    def solve(self, matrix : np.array):
+        # get the original shape of the matrix
+        original_shape = matrix.shape
+        rows, cols = matrix.shape
 
         # flattend matrix and get it's pointer
-        flat_array = np_matrix.ravel()
+        flat_array = matrix.ravel()
         c_matrix_ptr = flat_array.ctypes.data_as(POINTER(c_double))
         
         # call C function and measure time
         start_time = time.perf_counter()
-        sol = self._solver_dll.solve_linear_system(c_matrix_ptr, rows, cols)
+        sol = self._solver_dll.solve_linear_system(c_matrix_ptr, rows, cols, self._num_threads)
         end_time = time.perf_counter()
         
         # reshape the result
@@ -120,24 +122,18 @@ def parse_linear_equations(equations : str) -> list:
     return [parse_linear_equation(eq) for eq in equations]
 
 
-def equations_to_matrix(equations) :
-    # Extract and sort unique variables from the equations
-    variables = sorted({var for eq in equations for var in eq.keys() if var})
+def equations_to_matrix(equations):
+    variables = sorted({var for eq in equations for var in eq if var})
 
-    # Initialize the matrix
-    matrix = []
+    matrix = np.zeros((len(equations), len(variables) + 1), dtype=float)
 
-    # Convert each equation to a row in the matrix
-    for eq in equations:
-        row = [0] * (len(variables) + 1)  # Initialize a row with zeros
+    for i, eq in enumerate(equations):
         for var, coef in eq.items():
-            if var == '':
-                row[-1] = -coef  # Constant term goes to the last position
+            if var == '':  
+                matrix[i, -1] = -coef
             else:
                 idx = variables.index(var)
-                row[idx] = coef  # Variable coefficient goes to the correct position
-
-        matrix.append(row)
+                matrix[i, idx] = coef
 
     return matrix, variables
 
@@ -171,9 +167,9 @@ class RadioFrame(MenuFrame):
         for name, callback in radio_options:
             self._create_radiobutton(name, callback, padding)
 
-    def _create_radiobutton(self, 
-                            text: str, 
-                            callback: Callable[[], None], 
+    def _create_radiobutton(self,
+                            text: str,
+                            callback: Callable[[], None],
                             padding: Tuple[int, int]) -> None:
         ttk.Radiobutton(
             self, text=text, value=text,
@@ -255,10 +251,10 @@ class MatrixInputFrame(MenuFrame):
             ("Text", self._activate_text_input)
         )
 
-        self.src_selection = RadioFrame(self, 
-                                        title="Source type", 
-                                        radio_options=radio_options, 
-                                        padding=pad, 
+        self.src_selection = RadioFrame(self,
+                                        title="Source type",
+                                        radio_options=radio_options,
+                                        padding=pad,
                                         title_font=('Arial', 10))
         self.src_selection.pack(fill='both', padx=pad[0], pady=pad[1])
 
@@ -281,6 +277,7 @@ class MatrixInputFrame(MenuFrame):
 
     def get_raw_input(self) -> str:
         selected_mode = self.src_selection.get_selected()
+
         if selected_mode == "File":
             return self._get_file_input()
         elif selected_mode == "Text":
@@ -292,8 +289,8 @@ class MatrixInputFrame(MenuFrame):
         try:
             file_path = self.file_input_frame.get_file_path()
             with open(file_path, "r", encoding='utf8') as file:
-                content = file.read()
-                return content
+                return file.read()
+            
         except FileNotFoundError:
             raise FileNotFoundError(f'File "{file_path}" not found.')
 
@@ -305,15 +302,23 @@ class EquationResultFrame(MenuFrame):
     def __init__(self, parent : tk.Widget):
         super().__init__(parent, menu_title="Equation Result")
 
+        # generate result area
         self._res_area = scrolledtext.ScrolledText(self, width=30, height=10)
         self._res_area.pack(fill='both', padx=10, pady=10, expand=True)
         self._disable_result_field()
+
+        # generate execution time label
+        self._time_label = ttk.Label(self, text="Execution time: ...")
+        self._time_label.pack(fill='x', padx=10, pady=10)
 
     def set_result(self, result : str):
         self._enable_result_field()
         self._res_area.delete(1.0, tk.END)
         self._res_area.insert(tk.END, result)
         self._disable_result_field()
+
+    def set_execution_time(self, time : float):
+        self._time_label.config(text=f"Library execution time: {time:.6f} s")
 
     def _enable_result_field(self):
         self._res_area.config(state='normal')
@@ -340,14 +345,13 @@ class ConfigFrame(MenuFrame):
         )
         self._library_selection.pack(fill='both', padx=10, pady=10)
 
-
         thread_num_frame = ttk.Frame(self)
         thread_num_frame.pack(fill='both', padx=10, pady=10)
 
         thr_num_label = ttk.Label(thread_num_frame, text="Number of threads:")
         thr_num_label.pack(side='left', padx=10, pady=10)
 
-        validation = lambda x: x == "" or (x.isdigit() and 1 <= int(x) <= 64)
+        validation = lambda x: not x or (x.isdigit() and 1 <= int(x) <= 64)
         self.thr_num_spinner = ttk.Spinbox(
             thread_num_frame,
             from_=1,
@@ -362,7 +366,6 @@ class ConfigFrame(MenuFrame):
         runButton = ttk.Button(self, text="Run", 
                                command=self._run_clicked)
         runButton.pack(side='bottom',fill='x', padx=10, pady=10)
-
 
     def _get_num_threads(self) -> int:
         return int(self.thr_num_spinner.get())
@@ -413,8 +416,8 @@ class MainApp(tk.Tk):
             
             solver = LinearEquationSolver(num_threads, library)
             matrix, execution_time, result_str = solver.solve(eq_matrix)
-
-            print(execution_time)
+            
+            self._result_frame.set_execution_time(execution_time)
 
             if result_str:
                 self._result_frame.set_result(result_str)                
@@ -424,10 +427,9 @@ class MainApp(tk.Tk):
 
         except ValueError as e:
             messagebox.showerror("Error", str(e))
-            return
+
         except FileNotFoundError as e:
             messagebox.showerror("Error", e)
-            return
 
     # refactor needed
     def _result_string(self, result : list, variables : list) -> str:

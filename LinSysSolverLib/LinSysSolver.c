@@ -144,13 +144,96 @@ static void eliminate_single_thread(double* matrix, int rows, int cols, int pivo
     }
 }
 
+typedef struct {
+    double* matrix;
+    int rows;
+    int cols;
+    int pivot_row_idx;
+    int startRow;
+    int endRow;
+} GaussJordanThreadData;
+
+static DWORD WINAPI rows_op_thread(LPVOID lpParam)
+{
+    GaussJordanThreadData* data = (GaussJordanThreadData*)lpParam;
+    double* matrix = data->matrix;
+    int rows = data->rows;
+    int cols = data->cols;
+    int pivotRowIdx = data->pivot_row_idx;
+    int startRow = data->startRow;
+    int endRow = data->endRow;
+
+    int pivotColIdx = pivotRowIdx;
+
+    for (int r = startRow; r < endRow; r++)
+    {
+        if (r == pivotRowIdx) {
+            continue;
+        }
+
+        double factor = val_at(matrix, cols, r, pivotColIdx);
+        if (is_zero(factor)) {
+            continue;
+        }
+
+        for (int c = pivotColIdx; c < cols; c++)
+        {
+            double valPivotRow = val_at(matrix, cols, pivotRowIdx, c);
+            *at(matrix, cols, r, c) -= factor * valPivotRow;
+        }
+    }
+
+    return 0;
+}
+
+static void eliminate_multi_thread(double* matrix, int rows, int cols, int pivor_row_idx, int num_threads)
+{
+#define MAX_THREADS 64
+    num_threads = min(MAX_THREADS, num_threads);
+    HANDLE threads[MAX_THREADS];
+    GaussJordanThreadData threadData[MAX_THREADS];
+
+    int rows_per_thread = rows / num_threads;
+    int start = 0;
+
+    // Create each thread
+    for (int i = 0; i < num_threads; i++)
+    {
+        int end = (i == num_threads - 1) ? rows : (start + rows_per_thread);
+
+        // Initialize thread-specific data
+        threadData[i].matrix = matrix;
+        threadData[i].rows = rows;
+        threadData[i].cols = cols;
+        threadData[i].pivot_row_idx = pivor_row_idx;
+        threadData[i].startRow = start;
+        threadData[i].endRow = end;
+
+        threads[i] = CreateThread(NULL, 0, rows_op_thread, &threadData[i], 0, NULL);
+
+        if (threads[i] == NULL) {
+            fprintf(stderr, "Failed to create thread %d\n", i);
+            return;
+        }
+
+        start = end;
+    }
+
+    WaitForMultipleObjects(num_threads, threads, TRUE, INFINITE);
+
+    for (int i = 0; i < num_threads; i++)
+    {
+        CloseHandle(threads[i]);
+    }
+}
+
 // Solves in-place system of linear equations.
 // Returns:
 //  - 0: system has no solution,
 //  - 1: system has 1 solution,
 //  - 2: system has infinite number of solutions,
 __declspec(dllexport)
-int solve_linear_system(double* matrix, int rows, int cols)
+int solve_linear_system(double* matrix, int rows, int cols, int num_threads)
 {
     int variables_num = cols - 1;
     int it_num = min(variables_num, rows);
@@ -176,7 +259,12 @@ int solve_linear_system(double* matrix, int rows, int cols)
             *at(matrix, cols, row, c) /= pivot;
         }
 
-        eliminate_single_thread(matrix, rows, cols, row);
+        if (num_threads == 1) {
+            eliminate_single_thread(matrix, rows, cols, row);
+        }
+        else {
+            eliminate_multi_thread(matrix, rows, cols, row, num_threads);
+        }
     }
 
     // remove minus zeros from result column
