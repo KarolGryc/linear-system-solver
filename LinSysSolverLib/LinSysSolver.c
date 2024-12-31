@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #define EPSILON fabs(1e-9)
 
@@ -16,12 +17,17 @@ static inline double* at(double* matrix, int sizeX, int row, int col)
     return &matrix[sizeX * row + col];
 }
 
+static inline double val_at(double* matrix, int sizeX, int row, int col)
+{
+    return matrix[sizeX * row + col];
+}
+
 
 static inline int first_non_zero_in_col(double* matrix, int sizeX, int sizeY, int col, int startRow)
 {
     for (int row = startRow; row < sizeY; row++)
     {
-        double el = *at(matrix, sizeX, row, col);
+        double el = val_at(matrix, sizeX, row, col);
         if (!is_zero(el)) 
         {
             return row;
@@ -36,8 +42,8 @@ static inline void swap_rows(double* matrix, int sizeX, int rowA, int rowB, int 
 {
     for (int col = startCol; col < sizeX; col++)
     {
-        double temp = *at(matrix, sizeX, rowA, col);
-        *at(matrix, sizeX, rowA, col) = *at(matrix, sizeX, rowB, col);
+        double temp = val_at(matrix, sizeX, rowA, col);
+        *at(matrix, sizeX, rowA, col) = val_at(matrix, sizeX, rowB, col);
         *at(matrix, sizeX, rowB, col) = temp;
     }
 }
@@ -52,7 +58,7 @@ static bool is_solvable(double* matrix, int rows, int cols)
         bool all_zeros = true;
         for (int c = 0; c < var_num; c++)
         {
-            double val = *at(matrix, cols, rowIdx, c);
+            double val = val_at(matrix, cols, rowIdx, c);
             if (!is_zero(val))
             {
                 if (!all_zeros)
@@ -64,7 +70,7 @@ static bool is_solvable(double* matrix, int rows, int cols)
             }
         }
 
-        double solution = *at(matrix, cols, rowIdx, var_num);
+        double solution = val_at(matrix, cols, rowIdx, var_num);
         if (all_zeros && !is_zero(solution))
         {
             return false;
@@ -78,7 +84,7 @@ static inline bool row_contains_only_zeros(double* matrix, int cols, int rowIdx)
 {
     for (int i = 0; i < cols; i++)
     {
-        double val = *at(matrix, cols, rowIdx, i);
+        double val = val_at(matrix, cols, rowIdx, i);
         if (!is_zero(val))
         {
             return false;
@@ -123,7 +129,7 @@ static void eliminate_single_thread(double* matrix, int rows, int cols, int pivo
             continue;
         }
 
-        double factor = *at(matrix, cols, r, pivotColIdx);
+        double factor = val_at(matrix, cols, r, pivotColIdx);
         if (is_zero(factor))
         {
             continue;
@@ -131,12 +137,11 @@ static void eliminate_single_thread(double* matrix, int rows, int cols, int pivo
 
         for (int c = pivotColIdx; c < cols; c++)
         {
-            double valPivotRow = *at(matrix, cols, pivotRowIdx, c);
+            double valPivotRow = val_at(matrix, cols, pivotRowIdx, c);
             *at(matrix, cols, r, c) -= factor * valPivotRow;
         }
     }
 }
-
 
 // Solves in-place system of linear equations.
 // Returns:
@@ -147,10 +152,6 @@ __declspec(dllexport)
 int solve_linear_system(double* matrix, int rows, int cols)
 {
     int variables_num = cols - 1;
-
-    if (variables_num < rows) {
-
-    }
 
     for (int row = 0; row < variables_num; row++)
     {
@@ -165,7 +166,7 @@ int solve_linear_system(double* matrix, int rows, int cols)
             }
 
             swap_rows(matrix, cols, row, foundRow, row);
-            pivot = *at(matrix, cols, row, row);
+            pivot = val_at(matrix, cols, row, row);
         }
 
         // Normalize pivot row.
@@ -175,6 +176,17 @@ int solve_linear_system(double* matrix, int rows, int cols)
         }
 
         eliminate_single_thread(matrix, rows, cols, row);
+    }
+
+    // remove minus zeros from result column
+    int solution_col = cols - 1;
+    for (int i = 0; i < rows; i++)
+    {
+        double* val_ptr = at(matrix, cols, i, solution_col);
+        if (is_zero(*val_ptr))
+        {
+            *val_ptr = 0.0;
+        }
     }
 
     return solutions_in_system(matrix, rows, cols);

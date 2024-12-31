@@ -18,7 +18,7 @@ class LinearEquationSolver:
         self._num_threads = num_threads
         dir = os.path.dirname(os.path.abspath(__file__))
         if lib == LibraryEnum.C_LIB:
-            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib.dll")
+            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib\x64\Debug\LinSysSolverLib.dll")
         elif lib == LibraryEnum.ASM_LIB:
             raise NotImplementedError("ASM library not implemented.")
         else:
