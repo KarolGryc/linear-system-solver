@@ -38,9 +38,15 @@ class LinearEquationSolver:
 
         return flattened_data
 
+    def _deflaten_matrix(self, matrix_data : list, sizeX : int) -> list:
+        deflated_data = []
+        for i in range(0, len(matrix_data), sizeX):
+            deflated_data.append(matrix_data[i:i + sizeX])
+
+        return deflated_data
+
     def solve(self, matrix_data : list) -> list:
-        sizeY = len(matrix_data)
-        sizeX = len(matrix_data[0])
+        sizeY, sizeX = len(matrix_data), len(matrix_data[0])
 
         flattened_data = self._flatten_matrix(matrix_data)
 
@@ -48,28 +54,17 @@ class LinearEquationSolver:
         c_matrix = DoubleArrayType(*flattened_data)
 
         sol = self._solver_dll.solve_linear_system(c_matrix, sizeY, sizeX)
-        flattened_result = list(c_matrix)
         
         if sol == 0:
             raise ValueError("System has no solutions.")
         elif sol == 1:
+            flattened_result = list(c_matrix)
             deflated_data = self._deflaten_matrix(flattened_result, sizeX)
             return deflated_data
         elif sol == 2:
             raise ValueError("System has infinite solutions.")
         else:
             raise ValueError("Unknown error.")
-    
-    def solve_with_variables(self, matrix_data : list, variables : list) -> list:
-        result = self.solve(matrix_data)
-        return self._result_to_string(result, variables)
-
-    def _deflaten_matrix(self, matrix_data : list, sizeX : int) -> list:
-        deflated_data = []
-        for i in range(0, len(matrix_data), sizeX):
-            deflated_data.append(matrix_data[i:i + sizeX])
-
-        return deflated_data
 
 def parse_linear_equation(equation : str) -> dict:
     equation = equation.replace(" ", "")

@@ -152,8 +152,8 @@ __declspec(dllexport)
 int solve_linear_system(double* matrix, int rows, int cols)
 {
     int variables_num = cols - 1;
-
-    for (int row = 0; row < variables_num; row++)
+    int it_num = min(variables_num, rows);
+    for (int row = 0; row < it_num; row++)
     {
         double pivot = *at(matrix, cols, row, row);
 
