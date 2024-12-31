@@ -2,7 +2,10 @@ import re
 import tkinter as tk
 import ctypes
 import os
+import time
+import numpy as np
 from enum import Enum
+from ctypes import c_double, POINTER
 from typing import Tuple, Callable
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 
@@ -18,7 +21,7 @@ class LinearEquationSolver:
         self._num_threads = num_threads
         dir = os.path.dirname(os.path.abspath(__file__))
         if lib == LibraryEnum.C_LIB:
-            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib\x64\Debug\LinSysSolverLib.dll")
+            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib\x64\Release\LinSysSolverLib.dll")
         elif lib == LibraryEnum.ASM_LIB:
             raise NotImplementedError("ASM library not implemented.")
         else:
@@ -31,40 +34,38 @@ class LinearEquationSolver:
         ]
         self._solver_dll.solve_linear_system.restype = ctypes.c_int
 
-    def _flatten_matrix(self, matrix_data : list) -> list:
-        flattened_data = []
-        for row in matrix_data:
-            flattened_data.extend(row)
-
-        return flattened_data
-
-    def _deflaten_matrix(self, matrix_data : list, sizeX : int) -> list:
-        deflated_data = []
-        for i in range(0, len(matrix_data), sizeX):
-            deflated_data.append(matrix_data[i:i + sizeX])
-
-        return deflated_data
-
-    def solve(self, matrix_data : list) -> list:
-        sizeY, sizeX = len(matrix_data), len(matrix_data[0])
-
-        flattened_data = self._flatten_matrix(matrix_data)
-
-        DoubleArrayType = ctypes.c_double * (sizeX * sizeY)
-        c_matrix = DoubleArrayType(*flattened_data)
-
-        sol = self._solver_dll.solve_linear_system(c_matrix, sizeY, sizeX)
-        
-        if sol == 0:
-            raise ValueError("System has no solutions.")
-        elif sol == 1:
-            flattened_result = list(c_matrix)
-            deflated_data = self._deflaten_matrix(flattened_result, sizeX)
-            return deflated_data
-        elif sol == 2:
-            raise ValueError("System has infinite solutions.")
+    def _handle_result(self, result_num) -> str:
+        if result_num == 0:
+            return "System has no solutions."
+        elif result_num == 1:
+            return ""
+        elif result_num == 2:
+            return "System has infinite solutions."
         else:
-            raise ValueError("Unknown error.")
+            return "Unknown error."
+
+    def solve(self, matrix : list):
+        # convert matrix to numpy array
+        np_matrix = np.array(matrix, dtype=np.float64)
+        original_shape = np_matrix.shape
+        rows, cols = np_matrix.shape
+
+        # flattend matrix and get it's pointer
+        flat_array = np_matrix.ravel()
+        c_matrix_ptr = flat_array.ctypes.data_as(POINTER(c_double))
+        
+        # call C function and measure time
+        start_time = time.perf_counter()
+        sol = self._solver_dll.solve_linear_system(c_matrix_ptr, rows, cols)
+        end_time = time.perf_counter()
+        
+        # reshape the result
+        deflated_data = flat_array.reshape(original_shape)
+
+        # get the result string
+        result_str = self._handle_result(sol)
+
+        return deflated_data, end_time - start_time, result_str
 
 def parse_linear_equation(equation : str) -> dict:
     equation = equation.replace(" ", "")
@@ -411,10 +412,15 @@ class MainApp(tk.Tk):
             eq_matrix, var = equations_to_matrix(equations)
             
             solver = LinearEquationSolver(num_threads, library)
-            result = solver.solve(eq_matrix)
+            matrix, execution_time, result_str = solver.solve(eq_matrix)
 
-            result = self._result_string(result, var)
-            self._result_frame.set_result(result)
+            print(execution_time)
+
+            if result_str:
+                self._result_frame.set_result(result_str)                
+            else:
+                matrix = self._result_string(matrix, var)
+                self._result_frame.set_result(matrix)
 
         except ValueError as e:
             messagebox.showerror("Error", str(e))
