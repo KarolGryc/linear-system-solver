@@ -2,16 +2,17 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "Lib.h"
 
 #define EPSILON fabs(1e-9)
 
-
+// OK
 static inline bool is_zero(double arg)
 {
     return fabs(arg) < EPSILON;
 }
 
-
+// OK
 static inline double* at(double* matrix, int sizeX, int row, int col)
 {
     return &matrix[sizeX * row + col];
@@ -29,7 +30,7 @@ static inline int first_non_zero_in_col(double* matrix, int sizeX, int sizeY, in
     for (int row = startRow; row < sizeY; row++)
     {
         double el = val_at(matrix, sizeX, row, col);
-        if (!is_zero(el)) 
+        if (!is_zero(el))
         {
             return row;
         }
@@ -230,39 +231,38 @@ static void eliminate_multi_thread(double* matrix, int rows, int cols, int pivor
 //  - 0: system has no solution,
 //  - 1: system has 1 solution,
 //  - 2: system has infinite number of solutions,
-__declspec(dllexport)
 int solve_linear_system(double* matrix, int rows, int cols, int num_threads)
 {
-    int variables_num = cols - 1;
-    int it_num = min(variables_num, rows);
-    for (int row = 0; row < it_num; row++)
+    int variables_num = cols - 1;           // OK
+    int it_num = min(variables_num, rows);  // OK
+    for (int row = 0; row < it_num; row++)  // OK
     {
-        double pivot = *at(matrix, cols, row, row);
+        double pivot = *at(matrix, cols, row, row); // OK
 
-        if (is_zero(pivot))
+        if (is_zero(pivot)) // OK
         {
-            int foundRow = first_non_zero_in_col(matrix, cols, rows, row, row + 1);
-            if (foundRow == -1)
+            int foundRow = first_non_zero_in_col(matrix, cols, rows, row, row + 1); // ok
+            if (foundRow == -1) // ok
             {
                 continue;
             }
 
-            swap_rows(matrix, cols, row, foundRow, row);
-            pivot = val_at(matrix, cols, row, row);
+            swap_rows(matrix, cols, row, foundRow, row); // ok
+            pivot = val_at(matrix, cols, row, row); // ok
         }
 
         // Normalize pivot row.
-        for (int c = row; c < cols; c++)
+        for (int c = row; c < cols; c++) // ok
         {
             *at(matrix, cols, row, c) /= pivot;
         }
 
         // could take out loop for better performance
-        if (num_threads == 1) 
+        if (num_threads ==  1)
         {
             eliminate_single_thread(matrix, rows, cols, row);
         }
-        else 
+        else
         {
             eliminate_multi_thread(matrix, rows, cols, row, num_threads);
         }

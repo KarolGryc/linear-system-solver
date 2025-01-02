@@ -1,0 +1,3 @@
+LIBRARY LinSysSolverAsm
+
+EXPORTS solve_linear_system
