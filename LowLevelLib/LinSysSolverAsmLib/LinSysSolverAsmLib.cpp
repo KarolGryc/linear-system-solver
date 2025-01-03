@@ -35,6 +35,8 @@ int main()
 
     solveAsm(matrix, rows, cols, num_threads);
 
+    solve_linear_system (matrix, rows, cols, num_threads);
+
     // Helo ³ord
     std::cout << "Hello World!" << std::endl;
     return 0;

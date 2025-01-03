@@ -318,7 +318,7 @@ class EquationResultFrame(MenuFrame):
         self._disable_result_field()
 
     def set_execution_time(self, time : float):
-        self._time_label.config(text=f"Library execution time: {time:.6f} s")
+        self._time_label.config(text=f"Library execution time: {time:.8f} s")
 
     def _enable_result_field(self):
         self._res_area.config(state='normal')
