@@ -25,7 +25,7 @@ class LinearEquationSolver:
         if lib == LibraryEnum.C_LIB:
             self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib\x64\Release\LinSysSolverLib.dll")
         elif lib == LibraryEnum.ASM_LIB:
-            raise NotImplementedError("ASM library not implemented.")
+            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LowLevelLib\x64\Release\LinSysSolverAsm.dll")
         else:
             raise ValueError("Invalid library selected.")
 

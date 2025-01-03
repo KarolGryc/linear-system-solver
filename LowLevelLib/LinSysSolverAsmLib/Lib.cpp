@@ -147,7 +147,6 @@ static void eliminate_single_thread(double* matrix, int rows, int cols, int pivo
 
 typedef struct {
     double* matrix;
-    int rows;
     int cols;
     int pivot_row_idx;
     int startRow;
@@ -158,7 +157,6 @@ static DWORD WINAPI rows_op_thread(LPVOID lpParam)
 {
     GaussJordanThreadData* data = (GaussJordanThreadData*)lpParam;
     double* matrix = data->matrix;
-    int rows = data->rows;
     int cols = data->cols;
     int pivot_row_idx = data->pivot_row_idx;
     int startRow = data->startRow;
@@ -202,7 +200,6 @@ static void eliminate_multi_thread(double* matrix, int rows, int cols, int pivor
         int end = (i == num_threads - 1) ? rows : (start + rows_per_thread);
 
         threadData[i].matrix = matrix;
-        threadData[i].rows = rows;
         threadData[i].cols = cols;
         threadData[i].pivot_row_idx = pivor_row_idx;
         threadData[i].startRow = start;

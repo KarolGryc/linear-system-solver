@@ -21,12 +21,16 @@ int main()
 
     
     double matrix[] = {
-        1.1, 2.2, 3.3,
-        4.4, 5.5, 6.6
+        1.0, 1.0, 1.0, 3.0,
+        0.0, 1.0, 1.0, 2.0,
+        1.0, 1.0, 0.0, 3.0
+        
+        //1.1, 2.2, 3.3, 4.4,
+        //6.6, 7.7, 8.8, 9.9,
     };
     
-    int rows = 2;
-    int cols = 3;
+    int rows = 3;
+    int cols = 4;
     int num_threads = 1;
 
     solveAsm(matrix, rows, cols, num_threads);
