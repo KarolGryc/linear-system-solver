@@ -1,18 +1,19 @@
+INCLUDELIB kernel32.lib
+
+EXTERN CreateThread: PROC
+EXTERN WaitForMultipleObjects: PROC
+EXTERN CloseHandle: PROC
+
 GaussJordanThreadData STRUCT
-matrix            QWORD ?
-cols              DWORD ?
-pivot_row_idx     DWORD ?
-startRow          DWORD ?
-endRow            DWORD ?
+startRow          QWORD ?
+endRow            QWORD ?
 GaussJordanThreadData ENDS
 
-.data
-	gaussDataArray GaussJordanThreadData 64 DUP(<>)
-
 .const
+	MAX_THREADS     EQU 64
 	epsilon			REAL4 1.0e-9 
 	zeroVal			dd 0.0
-	maxThreads		dq 64
+	maxThreads		dq MAX_THREADS
 	rmSignMask		dd 07FFFFFFFh
 	flipSignMask	dd 080000000h
 	floatSize		EQU 4
@@ -21,17 +22,22 @@ GaussJordanThreadData ENDS
 	intSize			EQU 4
 	
 	; GaussJordanThreadData STRUCT offsets
-	matrixPtrOff	EQU 0
-	colsOff			EQU 8
-	pivotRowIdxOff	EQU 12
-	startRowOff		EQU	16
-	endRowOff		EQU 20
+	startRowOff		EQU	0
+	endRowOff		EQU 8
 
+.data 
+	matrixAddr	dq	0
+	numCols		dq	0
+	numRows		dq	0
+	numThreads	dq	1
+	pivotRowIdx dq	0
+    threads         QWORD MAX_THREADS DUP(?)
+    threadData      GaussJordanThreadData MAX_THREADS DUP(<?>)
 .code
+
+; <------------------------------------------------------->
 ; MACRO write_if_smaller
-; if(saveTo > compared) {
-;	saveTo = compared;
-; }
+; saveTo = min(saveTo, compared)
 ;
 ; args:
 ; saveTo -> register to compare and save result to
@@ -40,8 +46,11 @@ write_min MACRO saveTo, compared
 	cmp saveTo, compared
 	cmovg saveTo, compared
 ENDM
+; <------------------------------------------------------->
 
 
+
+; <------------------------------------------------------->
 ; MACRO mtx_off
 ; Saves offset into given register
 ;
@@ -55,8 +64,11 @@ mtx_off MACRO saveTo, rowSize, rowIdx, colIdx
 	imul	saveTo, rowSize
 	add		saveTo, colIdx	; (rowIdx * rowSize) + colIdx	
 ENDM
+; <------------------------------------------------------->
 
 
+
+; <------------------------------------------------------->
 ; MACRO is_zero
 ; Checks if given register value is less than ESPILON.
 ; Returns (through RAX):
@@ -70,24 +82,29 @@ is_zero MACRO register
 	andps register, xmm1 ; perform fabs (resets sign bit)
 	comiss register, epsilon
 ENDM
+; <------------------------------------------------------->
 
 
+
+; <------------------------------------------------------->
+; PROCEDURE eliminate_on_thread
+; Executes elimination on single thread
 eliminate_on_thread PROC
 	push rsi
 	; RCX <-> threadDataPtr
 	; save data to registers
-	mov		rdx,	QWORD PTR [rcx]					; RDX = float* matrix
-	movsxd	r8,		DWORD PTR [rcx + colsOff]		; R8  = int cols (rowSize)
-	movsxd	r9,		DWORD PTR [rcx + pivotRowIdxOff]; R9  = int pivotRowidx (pivotColIdx)
-	movsxd	r10,	DWORD PTR [rcx + startRowOff]	; R10 = int startRowIdx (currRow)
-	movsxd	r11,	DWORD PTR [rcx + endRowOff]		; R11 = int endRowIdx
+	mov	rdx,	matrixAddr	; RDX = float* matrix
+	mov	r8,		numCols		; R8  = int cols (rowSize)
+	mov	r9,		pivotRowIdx	; R9  = int pivotRowidx (pivotColIdx)
+	mov	r10,	QWORD PTR [rcx + startRowOff]	; R10 = int startRowIdx (currRow)
+	mov	r11,	QWORD PTR [rcx + endRowOff]		; R11 = int endRowIdx
 
 _elimStart:
 	cmp r10, r11	; if (currRow >= endRowIdx)
 	jge _finishElim ;	break
 
 	cmp r10, r9		; if (currRow == pivotRow)
-	je _endLoop	;	continue	(skip row)
+	je _endLoop		;	continue	(skip row)
 
 	mtx_off rax, r8, r10, r9 ; factor = value at (currRow, pivotColIdx)
 
@@ -111,12 +128,7 @@ _elimStart:
 
 		vmovups ymm2, ymmword ptr [rdx + rax * floatSize]	; Load destiny values
 		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize]	; Load pivot values
-
-		vfmadd231ps ymm2, ymm3, ymm4	; ymm2 += ymm3 * ymm4
-										; multiply pivot values by negated factor
-										; ymm2 += pivotVals * (-factor)
-										; ymm2 -= pivotVals * factor
-
+		vfmadd231ps ymm2, ymm3, ymm4	; ymm2 += ymm3 * ymm4 (ymm2 += pivotVals * (-factor))
 		vmovups ymmword ptr [rdx + rax * floatSize], ymm2	; save result
 
 		add rsi, ymmFloats				; move pivot ptr to next values
@@ -148,100 +160,24 @@ _finishElim:
 	xor rax, rax	; return 0
 	ret
 eliminate_on_thread ENDP
+; <------------------------------------------------------->
 
 
 
-has_solutions PROC
-	; RCX = float* matrix_ptr
-	; RDX = num_rows
-	; R8 = num_cols
-
-	dec rdx ; iterate from end, start from num_rows - 1
-
-	mov r9, r8	; R9 = numVariables
-	dec r9
-
-	xor rax, rax ; RAX = currElOffset (we are starting from the first one)
-
-_checkingSolutionsStart:
-	cmp rdx, 0	; if (rowIdx < 0) break
-	jl _checkingSolutionsEnd
-
-	mov r10, 1 ; R10 = allZeros
-	xor r11, r11 ; R11 = columnIdx
-
-	_chkSolutionColumnIt:
-		cmp r11, r9
-		jge _chkSolutionColumnEnd
-
-		movss xmm0, dword ptr [rcx + rax * floatSize]
-
-		is_zero xmm0
-		jbe _checkedIsZero
-
-		cmp r10, 1		; if (allZeros == false)
-		je _notAllZeros ;	allZeros = false
-		xor rax, rax	; else
-		ret				;	return false
-
-		_notAllZeros:
-			xor r10, r10; allZeros = false
-
-		_checkedIsZero:
-			inc rax		; move to next element
-			inc r11		; iterate to next column
-			jmp _chkSolutionColumnIt
-	_chkSolutionColumnEnd:
-
-	test r10, r10				; if (allZeros == false)
-	jz _checkingSolutionsItEnd	;	continue
-
-	movss xmm0, dword ptr [rcx + rax * floatSize]
-	is_zero xmm0				; if (xmm0 == 0.0)
-	jbe _checkingSolutionsItEnd	;	continue
-
-	xor rax, rax			; else
-	ret						; return false
-
-_checkingSolutionsItEnd:
-	inc rax
-	dec rdx
-	jmp _checkingSolutionsStart
-
-_checkingSolutionsEnd:
-	mov rax, 1	; return true
-	ret
-has_solutions ENDP
+; <------------------------------------------------------->
+; MACRO prepare_thread_array
+; Prepares global variables for execution
+prepare_thread_array MACRO mtxAddr, nRows, nCols, nThreads
+	mov matrixAddr, mtxAddr
+	mov numCols, nCols
+	mov numRows, nRows
+	mov numThreads, nThreads
+ENDM
+; <------------------------------------------------------->
 
 
-remove_close_zeros PROC
-	; RCX = float* matrix_ptr
-	; RDX = num_rows
-	; R8 = num_cols
 
-	mov rax, r8
-	dec rax
-
-	imul rdx, r8
-_removingZerosStart:
-	cmp rax, rdx
-	jge _removingZerosFinish
-
-	movss xmm0, dword ptr [rcx + rax * floatSize]
-
-	is_zero xmm0
-	ja _removingZerosItNext
-	movss xmm1, dword ptr [zeroVal]
-	movss dword ptr [rcx + rax * floatSize], xmm1
-
-_removingZerosItNext:
-	add rax, r8
-	jmp _removingZerosStart
-
-_removingZerosFinish:
-	ret
-remove_close_zeros ENDP
-
+; <------------------------------------------------------->
 ; PROCEDURE solve_linear_system
 ; Solves linear system in-place.
 ; Returns (through RAX):
@@ -264,15 +200,18 @@ solve_linear_system PROC
 	push rsi
 	push rdi
 								; R8 = row_size
-	mov rbx, r9					; RBX = num_of_threads
-	write_min rbx, qword ptr [maxThreads]
+	mov rax, r9					; RBX = num_of_threads
+	write_min rax, qword ptr [maxThreads]
+
+	prepare_thread_array rcx, rdx, r8, rax
 
 	mov r15, rdx				; R15 = num_of_rows
 	mov r12, r8					; R12 = num_of_iterations
 	dec r12						; variables_num = cols - 1
-	write_min r12, rdx			; num_of_iterations = min(rows, variables_num)
+	write_min r12, r15			; num_of_iterations = min(rows, variables_num)
 
 	xor r13, r13				; R13 = curr_row
+
 
 ; MAIN LOOP
 _solveLoopStart:
@@ -354,10 +293,10 @@ _solveLoopStart:
 	
 		mov rsi, r14	; RSI = currentPivotOffset	
 
-		mov r10, r8	
+		mov r10, r8		; R10 = iterations with AVX normalization
 		sub r10, r13
 		mov r11, r10	; R11 = iterations of simplenormalization
-		shr r10, 3		; R10 = iterations with AVX normalization
+		shr r10, 3		
 		and r11, 7
 
 		movss xmm0, dword ptr [rcx + r14 * floatSize] ; XMM0 = current pivot value
@@ -393,13 +332,12 @@ _elimination:
 	push rdx
 	push r8
 
-	mov QWORD PTR[gaussDataArray + matrixPtrOff],	rcx
-	mov DWORD PTR[gaussDataArray + colsOff],		r8d
-	mov DWORD PTR[gaussDataArray + pivotRowIdxOff],	r13d
-	mov DWORD PTR[gaussDataArray + startRowOff],	0
-	mov DWORD PTR[gaussDataArray + endRowOff],		r15d
 
-	lea rcx, [gaussDataArray]
+	mov pivotRowIdx, r13
+	mov DWORD PTR[threadData + startRowOff],	0
+	mov DWORD PTR[threadData + endRowOff],		r15d
+
+	lea rcx, [threadData]
 
 	call eliminate_on_thread
 
@@ -411,16 +349,18 @@ _elimination:
 	jmp _solveLoopStart		; _equatiosIteration loop
 
 
-; END OF THE MAIN LOOP
 _solveLoopEnd:
 	; RCX = float* matrix_ptr
 	; RDX = num_rows
 	; R8 = num_cols
-
-	mov rdx, r15
+	mov rcx, matrixAddr
+	mov rdx, numRows
+	mov r8, numCols
 	call remove_close_zeros
 
-	mov rdx, r15
+	mov rcx, matrixAddr
+	mov rdx, numRows
+	mov r8, numCols
 	call has_solutions
 
 	pop rdi
@@ -429,8 +369,109 @@ _solveLoopEnd:
 	pop r14
 	pop r13
 	pop r12
-
 	ret
 solve_linear_system ENDP
+; <------------------------------------------------------->
+
+
+
+; <------------------------------------------------------->
+; PROCEDURE remove_close_zeros
+; Changes numbers that are close to 0.0 to 0.0.
+remove_close_zeros PROC
+	; RCX = float* matrix_ptr
+	; RDX = num_rows
+	; R8 = num_cols
+
+	mov rax, r8
+	dec rax
+	imul rdx, r8
+_removingZerosStart:
+	cmp rax, rdx
+	jge _removingZerosFinish
+
+	movss xmm0, dword ptr [rcx + rax * floatSize]
+
+	is_zero xmm0
+	ja _removingZerosItNext
+	movss xmm1, dword ptr [zeroVal]
+	movss dword ptr [rcx + rax * floatSize], xmm1
+
+_removingZerosItNext:
+	add rax, r8
+	jmp _removingZerosStart
+
+_removingZerosFinish:
+	ret
+remove_close_zeros ENDP
+; <------------------------------------------------------->
+
+
+
+; <------------------------------------------------------->
+; PROCEDURE has_solutions
+; If solved matrix has solutions returns 1 in RAX else returns 0.
+has_solutions PROC
+	; RCX = float* matrix_ptr
+	; RDX = num_rows
+	; R8 = num_cols
+
+	dec rdx ; iterate from end, start from num_rows - 1
+
+	mov r9, r8	; R9 = numVariables
+	dec r9
+
+	xor rax, rax ; RAX = currElOffset (we are starting from the first one)
+
+_checkingSolutionsStart:
+	cmp rdx, 0	; if (rowIdx < 0) break
+	jl _checkingSolutionsEnd
+
+	mov r10, 1 ; R10 = allZeros
+	xor r11, r11 ; R11 = columnIdx
+
+	_chkSolutionColumnIt:
+		cmp r11, r9
+		jge _chkSolutionColumnEnd
+
+		movss xmm0, dword ptr [rcx + rax * floatSize]
+
+		is_zero xmm0
+		jbe _checkedIsZero
+
+		cmp r10, 1		; if (allZeros == false)
+		je _notAllZeros ;	allZeros = false
+		xor rax, rax	; else
+		ret				;	return false
+
+		_notAllZeros:
+			xor r10, r10; allZeros = false
+
+		_checkedIsZero:
+			inc rax		; move to next element
+			inc r11		; iterate to next column
+			jmp _chkSolutionColumnIt
+	_chkSolutionColumnEnd:
+
+	test r10, r10				; if (allZeros == false)
+	jz _checkingSolutionsItEnd	;	continue
+
+	movss xmm0, dword ptr [rcx + rax * floatSize]
+	is_zero xmm0				; if (xmm0 == 0.0)
+	jbe _checkingSolutionsItEnd	;	continue
+
+	xor rax, rax			; else
+	ret						; return false
+
+_checkingSolutionsItEnd:
+	inc rax
+	dec rdx
+	jmp _checkingSolutionsStart
+
+_checkingSolutionsEnd:
+	mov rax, 1	; return true
+	ret
+has_solutions ENDP
+; <------------------------------------------------------->
 
 END
