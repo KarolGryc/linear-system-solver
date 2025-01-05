@@ -1,7 +1,5 @@
-#include <iostream>
 #include <Windows.h>
-#include <vector>
-#include <chrono>
+#include <stdio.h>
 #include "Lib.h"
 
 typedef int(__fastcall *MatrixSolveFunc)(float*, int, int, int);
@@ -14,7 +12,7 @@ int main()
     dllHandle = LoadLibrary(L"LinSysSolverAsm.dll");
     
     if (!dllHandle) {
-        std::cout << "Library not loaded!" << std::endl;
+        print("Library not loaded!");
         return 1;
     }
 
@@ -37,6 +35,5 @@ int main()
 
     solveAsm(matrix, rows, cols, num_threads);
 
-    std::cout << "Hello World!" << std::endl;
     return 0;
 }
