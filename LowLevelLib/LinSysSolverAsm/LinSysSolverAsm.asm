@@ -20,6 +20,7 @@ GaussJordanThreadData ENDS
 	ymmFloats		EQU 8
 	ymmSize			EQU floatSize * ymmFloats
 	intSize			EQU 4
+	handleSize		EQU 8 
 	
 	; GaussJordanThreadData STRUCT offsets
 	startRowOff		EQU	0
@@ -31,7 +32,7 @@ GaussJordanThreadData ENDS
 	numRows		dq	0
 	numThreads	dq	1
 	pivotRowIdx dq	0
-    threads         QWORD MAX_THREADS DUP(?)
+    threadHandles   dq MAX_THREADS DUP(?)
     threadData      GaussJordanThreadData MAX_THREADS DUP(<?>)
 .code
 
@@ -164,14 +165,86 @@ eliminate_on_thread ENDP
 
 
 
+
+; <------------------------------------------------------->
+; MACRO eliminate_multithread
+; Does elimination with multiple threads
+eliminate_multithread PROC
+	push r12
+	push r13
+	push r14
+	push r15
+	push rsi
+
+	mov r15, numRows	; R15 = numRows
+	mov rax, r15
+	xor rdx, rdx
+	mov r12, numThreads ; R12 = numThreads
+    div r12
+	mov r14, rax ; R14 = rows_per_thread
+
+	xor r10, r10	; R10 = loop it = 0
+	xor r11, r11	; R11 = range start
+	lea rsi, threadData
+
+_threadCreateLoop:
+	cmp r10, r12
+	jge _threadCreateLoopEnd
+
+	mov r13, r11	; R13 = endRow
+	add r13, r14
+
+	mov rax, r12
+	dec rax
+	cmp r10, rax
+	cmove r13, r15	; if (last it) r13 = pastLastRow
+
+	inc r10
+	jmp _threadCreateLoop
+_threadCreateLoopEnd:
+
+
+	mov rcx, r12
+	lea rdx, [threadHandles]
+	mov r8, 1
+	mov r9, 0FFFFFFFFh
+	call WaitForMultipleObjects
+
+
+	xor r10, r10
+_closeThreadLoop:
+	cmp r10, r12
+	jge _threadCreateLoopEnd
+
+	mov rsi, threadHandles
+	mov rcx, qword ptr[rsi + r10 * handleSize]
+	call CloseHandle
+
+	inc r10
+	jmp _closeThreadLoop
+_closeThreadLoopEnd:
+	
+	pop rsi
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+	ret
+eliminate_multithread ENDP
+; <------------------------------------------------------->
+
+
+
 ; <------------------------------------------------------->
 ; MACRO prepare_thread_array
 ; Prepares global variables for execution
 prepare_thread_array MACRO mtxAddr, nRows, nCols, nThreads
+	mov rax, nThreads
+	write_min rax, qword ptr [maxThreads]
+	mov numThreads, rax
 	mov matrixAddr, mtxAddr
 	mov numCols, nCols
 	mov numRows, nRows
-	mov numThreads, nThreads
 ENDM
 ; <------------------------------------------------------->
 
@@ -199,11 +272,8 @@ solve_linear_system PROC
 	push r15
 	push rsi
 	push rdi
-								; R8 = row_size
-	mov rax, r9					; RBX = num_of_threads
-	write_min rax, qword ptr [maxThreads]
 
-	prepare_thread_array rcx, rdx, r8, rax
+	prepare_thread_array rcx, rdx, r8, r9
 
 	mov r15, rdx				; R15 = num_of_rows
 	mov r12, r8					; R12 = num_of_iterations
@@ -329,7 +399,6 @@ _solveLoopStart:
 
 _elimination:
 	push rcx
-	push rdx
 	push r8
 
 
@@ -339,10 +408,10 @@ _elimination:
 
 	lea rcx, [threadData]
 
+	call eliminate_multithread
 	call eliminate_on_thread
 
 	pop r8
-	pop rdx
 	pop rcx
 
 	inc r13					; ++curr_row

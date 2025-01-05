@@ -36,7 +36,7 @@ int main()
 
     int rows = 2;
     int cols = 3;
-    int num_threads = 1;
+    int num_threads = 69;
 
     solveAsm(matrix, rows, cols, num_threads);
 
