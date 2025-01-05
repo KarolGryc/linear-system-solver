@@ -10,13 +10,15 @@ GaussJordanThreadData ENDS
 	gaussDataArray GaussJordanThreadData 64 DUP(<>)
 
 .const
-	epsilon		REAL4 1.0e-9 
-	removeSignMaskDD  dd 07FFFFFFFh
+	epsilon			REAL4 1.0e-9 
+	zeroVal			dd 0.0
+	maxThreads		dq 64
+	rmSignMask		dd 07FFFFFFFh
 	flipSignMask	dd 080000000h
-	floatSize EQU 4
-	ymmFloats EQU 8
-	ymmSize EQU floatSize * ymmFloats
-	intSize EQU 4
+	floatSize		EQU 4
+	ymmFloats		EQU 8
+	ymmSize			EQU floatSize * ymmFloats
+	intSize			EQU 4
 	
 	; GaussJordanThreadData STRUCT offsets
 	matrixPtrOff	EQU 0
@@ -35,8 +37,8 @@ GaussJordanThreadData ENDS
 ; saveTo -> register to compare and save result to
 ; compared -> register to compare value and copy from
 write_min MACRO saveTo, compared
-	cmp compared, saveTo
-	cmovl saveTo, compared
+	cmp saveTo, compared
+	cmovg saveTo, compared
 ENDM
 
 
@@ -64,7 +66,7 @@ ENDM
 ; args:
 ; registerName -> name of the register to check contents
 is_zero MACRO register
-	movss xmm1, dword ptr [removeSignMaskDD]  
+	movss xmm1, dword ptr [rmSignMask]  
 	andps register, xmm1 ; perform fabs (resets sign bit)
 	comiss register, epsilon
 ENDM
@@ -217,9 +219,27 @@ remove_close_zeros PROC
 	; RDX = num_rows
 	; R8 = num_cols
 
+	mov rax, r8
+	dec rax
 
+	imul rdx, r8
+_removingZerosStart:
+	cmp rax, rdx
+	jge _removingZerosFinish
 
+	movss xmm0, dword ptr [rcx + rax * floatSize]
 
+	is_zero xmm0
+	ja _removingZerosItNext
+	movss xmm1, dword ptr [zeroVal]
+	movss dword ptr [rcx + rax * floatSize], xmm1
+
+_removingZerosItNext:
+	add rax, r8
+	jmp _removingZerosStart
+
+_removingZerosFinish:
+	ret
 remove_close_zeros ENDP
 
 ; PROCEDURE solve_linear_system
@@ -245,6 +265,8 @@ solve_linear_system PROC
 	push rdi
 								; R8 = row_size
 	mov rbx, r9					; RBX = num_of_threads
+	write_min rbx, qword ptr [maxThreads]
+
 	mov r15, rdx				; R15 = num_of_rows
 	mov r12, r8					; R12 = num_of_iterations
 	dec r12						; variables_num = cols - 1
@@ -322,8 +344,8 @@ _solveLoopStart:
 				movss dword ptr [rcx + rsi * 4], xmm1
 				movss dword ptr [rcx + rdi * 4], xmm0
 
-				add rsi, floatSize
-				add rdi, floatSize
+				inc rsi
+				inc rdi
 				dec r11	
 				jmp _simpleSwap
 
@@ -396,10 +418,10 @@ _solveLoopEnd:
 	; R8 = num_cols
 
 	mov rdx, r15
-	call has_solutions
+	call remove_close_zeros
 
 	mov rdx, r15
-	call remove_close_zeros
+	call has_solutions
 
 	pop rdi
 	pop rsi

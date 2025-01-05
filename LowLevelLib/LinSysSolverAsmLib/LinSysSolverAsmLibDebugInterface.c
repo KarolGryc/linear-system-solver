@@ -30,13 +30,13 @@ int main()
     //};
 
     float matrix[] = {
-        1.0, 0.0, 2.0,
-        1.0, 0.0, 5.0, 
+        1.0, 1.0, 2.0,
+        1.0, -1.0, 2.0, 
     };
 
     int rows = 2;
-    int cols = 3;
-    int num_threads = 1;
+    int cols = 4;
+    int num_threads = 69;
 
     solveAsm(matrix, rows, cols, num_threads);
 
