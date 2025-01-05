@@ -5,7 +5,7 @@ import os
 import time
 import numpy as np
 from enum import Enum
-from ctypes import c_double, POINTER
+from ctypes import c_float, POINTER
 from typing import Tuple, Callable
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 
@@ -30,7 +30,7 @@ class LinearEquationSolver:
             raise ValueError("Invalid library selected.")
 
         self._solver_dll.solve_linear_system.argtypes = [
-            ctypes.POINTER(ctypes.c_double), 
+            ctypes.POINTER(c_float), 
             ctypes.c_int,
             ctypes.c_int,
             ctypes.c_int
@@ -54,7 +54,7 @@ class LinearEquationSolver:
 
         # flattend matrix and get it's pointer
         flat_array = matrix.ravel()
-        c_matrix_ptr = flat_array.ctypes.data_as(POINTER(c_double))
+        c_matrix_ptr = flat_array.ctypes.data_as(POINTER(c_float))
         
         # call C function and measure time
         start_time = time.perf_counter()
@@ -125,7 +125,7 @@ def parse_linear_equations(equations : str) -> list:
 def equations_to_matrix(equations):
     variables = sorted({var for eq in equations for var in eq if var})
 
-    matrix = np.zeros((len(equations), len(variables) + 1), dtype=float)
+    matrix = np.zeros((len(equations), len(variables) + 1), dtype=np.float32)
 
     for i, eq in enumerate(equations):
         for var, coef in eq.items():
@@ -386,7 +386,7 @@ class ConfigFrame(MenuFrame):
 
 
 class MainApp(tk.Tk):
-    def __init__ (self, title : str, minSize : Tuple[int, int] = (200, 100)):
+    def __init__(self, title : str, minSize : Tuple[int, int] = (200, 100)):
         super().__init__()
         self.title(title)
         self.minsize(minSize[0], minSize[1])
@@ -434,6 +434,10 @@ class MainApp(tk.Tk):
     # refactor needed
     def _result_string(self, result : list, variables : list) -> str:
         result_str = ""
+        if len(variables) == 0:
+            return "System has no variables."
+        elif len(variables) > 2000:
+            return "Too many variables to display."
         for var in variables:
             result_str += f"{var} = {result[variables.index(var)][-1]}\n"
         return result_str

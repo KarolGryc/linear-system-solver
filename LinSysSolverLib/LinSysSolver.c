@@ -2,64 +2,65 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdint.h>
 
-#define EPSILON fabs(1e-9)
+#define EPSILON 1e-9f
 
 
-static inline bool is_zero(double arg)
+static inline bool is_zero(float arg)
 {
-    return fabs(arg) < EPSILON;
+    return fabsf(arg) < EPSILON;
 }
 
 
-static inline double* at(double* matrix, int sizeX, int row, int col)
+static inline float* at(float* matrix, int64_t sizeX, int64_t row, int64_t col)
 {
     return &matrix[sizeX * row + col];
 }
 
 
-static inline double val_at(double* matrix, int sizeX, int row, int col)
+static inline float val_at(float* matrix, int64_t sizeX, int64_t row, int64_t col)
 {
     return matrix[sizeX * row + col];
 }
 
 
-static inline int first_non_zero_in_col(double* matrix, int sizeX, int sizeY, int col, int startRow)
+static inline int64_t first_non_zero_in_col(float* matrix, int64_t sizeX, int64_t sizeY, int64_t col, int64_t startRow)
 {
-    for (int row = startRow; row < sizeY; row++)
+    for (int64_t row = startRow; row < sizeY; row++)
     {
-        double el = val_at(matrix, sizeX, row, col);
+        float el = val_at(matrix, sizeX, row, col);
         if (!is_zero(el)) 
         {
             return row;
         }
     }
 
-    return -1;
+    return -1ll;
 }
 
 
-static inline void swap_rows(double* matrix, int sizeX, int rowA, int rowB, int startCol)
+static inline void swap_rows(float* matrix, int64_t sizeX, int64_t rowA, int64_t rowB, int64_t startCol)
 {
-    for (int col = startCol; col < sizeX; col++)
+    for (int64_t col = startCol; col < sizeX; col++)
     {
-        double temp = val_at(matrix, sizeX, rowA, col);
+        float temp = val_at(matrix, sizeX, rowA, col);
         *at(matrix, sizeX, rowA, col) = val_at(matrix, sizeX, rowB, col);
         *at(matrix, sizeX, rowB, col) = temp;
     }
 }
 
 
-static bool is_solvable(double* matrix, int rows, int cols)
+static bool is_solvable(float* matrix, int64_t rows, int64_t cols)
 {
-    int var_num = cols - 1;
+    int64_t var_num = cols - 1;
 
-    for (int rowIdx = 0; rowIdx < rows; rowIdx++)
+    for (int64_t rowIdx = 0; rowIdx < rows; rowIdx++)
     {
         bool all_zeros = true;
-        for (int c = 0; c < var_num; c++)
+        for (int64_t c = 0; c < var_num; c++)
         {
-            double val = val_at(matrix, cols, rowIdx, c);
+            float val = val_at(matrix, cols, rowIdx, c);
             if (!is_zero(val))
             {
                 if (!all_zeros)
@@ -71,7 +72,7 @@ static bool is_solvable(double* matrix, int rows, int cols)
             }
         }
 
-        double solution = val_at(matrix, cols, rowIdx, var_num);
+        float solution = val_at(matrix, cols, rowIdx, var_num);
         if (all_zeros && !is_zero(solution))
         {
             return false;
@@ -81,11 +82,11 @@ static bool is_solvable(double* matrix, int rows, int cols)
     return true;
 }
 
-static inline bool row_contains_only_zeros(double* matrix, int cols, int rowIdx)
+static inline bool row_contains_only_zeros(float* matrix, int64_t cols, int64_t rowIdx)
 {
-    for (int i = 0; i < cols; i++)
+    for (int64_t i = 0; i < cols; i++)
     {
-        double val = val_at(matrix, cols, rowIdx, i);
+        float val = val_at(matrix, cols, rowIdx, i);
         if (!is_zero(val))
         {
             return false;
@@ -99,16 +100,16 @@ static inline bool row_contains_only_zeros(double* matrix, int cols, int rowIdx)
 #define ONE_SOLUTION 1
 #define INFINITE_SOLUTIONS 2
 
-static int solutions_in_system(double* matrix, int rows, int cols)
+static int64_t solutions_in_system(float* matrix, int64_t rows, int64_t cols)
 {
-    int variables_num = cols - 1;
+    int64_t variables_num = cols - 1;
 
     if (!is_solvable(matrix, rows, cols))
     {
         return variables_num > rows ? INFINITE_SOLUTIONS : NO_SOLUTIONS;
     }
 
-    for (int row = 0; row < variables_num; row++)
+    for (int64_t row = 0; row < variables_num; row++)
     {
         if (row_contains_only_zeros(matrix, cols, row))
         {
@@ -120,65 +121,63 @@ static int solutions_in_system(double* matrix, int rows, int cols)
 }
 
 
-static void eliminate_single_thread(double* matrix, int rows, int cols, int pivotRowIdx)
+static void eliminate_single_thread(float* matrix, int64_t rows, int64_t cols, int64_t pivotRowIdx)
 {
-    int pivotColIdx = pivotRowIdx;
-    for (int r = 0; r < rows; r++)
+    int64_t pivotColIdx = pivotRowIdx;
+    for (int64_t r = 0; r < rows; r++)
     {
         if (r == pivotRowIdx)
         {
             continue;
         }
 
-        double factor = val_at(matrix, cols, r, pivotColIdx);
+        float factor = val_at(matrix, cols, r, pivotColIdx);
         if (is_zero(factor))
         {
             continue;
         }
 
-        for (int c = pivotColIdx; c < cols; c++)
+        for (int64_t c = pivotColIdx; c < cols; c++)
         {
-            double valPivotRow = val_at(matrix, cols, pivotRowIdx, c);
+            float valPivotRow = val_at(matrix, cols, pivotRowIdx, c);
             *at(matrix, cols, r, c) -= factor * valPivotRow;
         }
     }
 }
 
 typedef struct {
-    double* matrix;
-    int rows;
-    int cols;
-    int pivot_row_idx;
-    int startRow;
-    int endRow;
+    float* matrix;
+    int64_t cols;
+    int64_t pivot_row_idx;
+    int64_t startRow;
+    int64_t endRow;
 } GaussJordanThreadData;
 
 static DWORD WINAPI rows_op_thread(LPVOID lpParam)
 {
     GaussJordanThreadData* data = (GaussJordanThreadData*)lpParam;
-    double* matrix = data->matrix;
-    int rows = data->rows;
-    int cols = data->cols;
-    int pivot_row_idx = data->pivot_row_idx;
-    int startRow = data->startRow;
-    int endRow = data->endRow;
+    float* matrix = data->matrix;
+    int64_t cols = data->cols;
+    int64_t pivot_row_idx = data->pivot_row_idx;
+    int64_t startRow = data->startRow;
+    int64_t endRow = data->endRow;
 
-    int pivot_col_idx = pivot_row_idx;
+    int64_t pivot_col_idx = pivot_row_idx;
 
-    for (int r = startRow; r < endRow; r++)
+    for (int64_t r = startRow; r < endRow; r++)
     {
         if (r == pivot_row_idx) {
             continue;
         }
 
-        double factor = val_at(matrix, cols, r, pivot_col_idx);
+        float factor = val_at(matrix, cols, r, pivot_col_idx);
         if (is_zero(factor)) {
             continue;
         }
 
-        for (int c = pivot_col_idx; c < cols; c++)
+        for (int64_t c = pivot_col_idx; c < cols; c++)
         {
-            double val_pivot_row = val_at(matrix, cols, pivot_row_idx, c);
+            float val_pivot_row = val_at(matrix, cols, pivot_row_idx, c);
             *at(matrix, cols, r, c) -= factor * val_pivot_row;
         }
     }
@@ -186,22 +185,21 @@ static DWORD WINAPI rows_op_thread(LPVOID lpParam)
     return 0;
 }
 
-static void eliminate_multi_thread(double* matrix, int rows, int cols, int pivor_row_idx, int num_threads)
+static void eliminate_multi_thread(float* matrix, int64_t rows, int64_t cols, int64_t pivor_row_idx, int64_t num_threads)
 {
 #define MAX_THREADS 64
     num_threads = min(MAX_THREADS, num_threads);
     HANDLE threads[MAX_THREADS];
     GaussJordanThreadData threadData[MAX_THREADS];
 
-    int rows_per_thread = rows / num_threads;
-    int start = 0;
+    int64_t rows_per_thread = rows / num_threads;
+    int64_t start = 0;
 
-    for (int i = 0; i < num_threads; i++)
+    for (int64_t i = 0; i < num_threads; i++)
     {
-        int end = (i == num_threads - 1) ? rows : (start + rows_per_thread);
+        int64_t end = (i == num_threads - 1) ? rows : (start + rows_per_thread);
 
         threadData[i].matrix = matrix;
-        threadData[i].rows = rows;
         threadData[i].cols = cols;
         threadData[i].pivot_row_idx = pivor_row_idx;
         threadData[i].startRow = start;
@@ -210,7 +208,7 @@ static void eliminate_multi_thread(double* matrix, int rows, int cols, int pivor
         threads[i] = CreateThread(NULL, 0, rows_op_thread, &threadData[i], 0, NULL);
 
         if (threads[i] == NULL) {
-            fprintf(stderr, "Failed to create thread %d\n", i);
+            printf("Failed to create thread %d\n", i);
             return;
         }
 
@@ -219,7 +217,7 @@ static void eliminate_multi_thread(double* matrix, int rows, int cols, int pivor
 
     WaitForMultipleObjects(num_threads, threads, TRUE, INFINITE);
 
-    for (int i = 0; i < num_threads; i++)
+    for (int64_t i = 0; i < num_threads; i++)
     {
         CloseHandle(threads[i]);
     }
@@ -231,17 +229,17 @@ static void eliminate_multi_thread(double* matrix, int rows, int cols, int pivor
 //  - 1: system has 1 solution,
 //  - 2: system has infinite number of solutions,
 __declspec(dllexport)
-int solve_linear_system(double* matrix, int rows, int cols, int num_threads)
+int64_t solve_linear_system(float* matrix, int64_t rows, int64_t cols, int64_t num_threads)
 {
-    int variables_num = cols - 1;
-    int it_num = min(variables_num, rows);
-    for (int row = 0; row < it_num; row++)
+    int64_t variables_num = cols - 1;
+    int64_t it_num = min(variables_num, rows);
+    for (int64_t row = 0; row < it_num; row++)
     {
-        double pivot = *at(matrix, cols, row, row);
+        float pivot = *at(matrix, cols, row, row);
 
         if (is_zero(pivot))
         {
-            int foundRow = first_non_zero_in_col(matrix, cols, rows, row, row + 1);
+            int64_t foundRow = first_non_zero_in_col(matrix, cols, rows, row, row + 1);
             if (foundRow == -1)
             {
                 continue;
@@ -252,7 +250,7 @@ int solve_linear_system(double* matrix, int rows, int cols, int num_threads)
         }
 
         // Normalize pivot row.
-        for (int c = row; c < cols; c++)
+        for (int64_t c = row; c < cols; c++)
         {
             *at(matrix, cols, row, c) /= pivot;
         }
@@ -269,13 +267,13 @@ int solve_linear_system(double* matrix, int rows, int cols, int num_threads)
     }
 
     // remove minus zeros from result column
-    int solution_col = cols - 1;
-    for (int i = 0; i < rows; i++)
+    int64_t solution_col = cols - 1;
+    for (int64_t i = 0; i < rows; i++)
     {
-        double* val_ptr = at(matrix, cols, i, solution_col);
+        float* val_ptr = at(matrix, cols, i, solution_col);
         if (is_zero(*val_ptr))
         {
-            *val_ptr = 0.0;
+            *val_ptr = 0.f;
         }
     }
 

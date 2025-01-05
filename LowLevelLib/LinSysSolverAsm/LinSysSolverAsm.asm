@@ -7,60 +7,25 @@ endRow            DWORD ?
 GaussJordanThreadData ENDS
 
 .data
-gaussDataArray GaussJordanThreadData 64 DUP(<>)
+	gaussDataArray GaussJordanThreadData 64 DUP(<>)
 
 .const
-epsilon		REAL8 1.0e-9 
-signMaskDQ  dq 07FFFFFFFFFFFFFFFh
-flipSignMask dq 08000000000000000h
-sizeOfDouble EQU 8
-doublesInYMM EQU 4
-sizeOfYMM EQU sizeOfDouble * doublesInYMM
-sizeOfInt EQU 4
+	epsilon		REAL4 1.0e-9 
+	removeSignMaskDD  dd 07FFFFFFFh
+	flipSignMask	dd 080000000h
+	floatSize EQU 4
+	ymmFloats EQU 8
+	ymmSize EQU floatSize * ymmFloats
+	intSize EQU 4
 	
-; GaussJordanThreadData STRUCT offsets
-matrixPtrOff	EQU 0
-colsOff			EQU 8
-pivotRowIdxOff	EQU 12
-startRowOff		EQU	16
-endRowOff		EQU 20
+	; GaussJordanThreadData STRUCT offsets
+	matrixPtrOff	EQU 0
+	colsOff			EQU 8
+	pivotRowIdxOff	EQU 12
+	startRowOff		EQU	16
+	endRowOff		EQU 20
 
 .code
-; MACRO push_non_volatile_regs
-; Pushes all non-volatile registers to stack.
-; (May be done better?)
-; To pop registers back use pop_non_volatile_regs.
-;
-; No args given
-push_non_volatile_regs MACRO
-push R12
-push R13
-push R14
-push R15
-push RDI
-push RSI
-push RBX
-push RBP
-ENDM
-
-
-; MACRO pop_non_volatile_regs
-; Pushes all non-volatile registers to stack.
-; (May be done better?)
-;
-; No args given
-pop_non_volatile_regs MACRO
-pop RBP
-pop RBX
-pop RSI
-pop RDI
-pop R15
-pop R14
-pop R13
-pop R12
-ENDM
-
-
 ; MACRO write_if_smaller
 ; if(saveTo > compared) {
 ;	saveTo = compared;
@@ -69,25 +34,24 @@ ENDM
 ; args:
 ; saveTo -> register to compare and save result to
 ; compared -> register to compare value and copy from
-write_if_smaller MACRO saveTo, compared
-cmp compared, saveTo
-cmovl saveTo, compared
+write_min MACRO saveTo, compared
+	cmp compared, saveTo
+	cmovl saveTo, compared
 ENDM
 
 
-; MACRO get_matrix_offset
+; MACRO mtx_off
 ; Saves offset into given register
 ;
 ; args:
+; saveTo -> register to save result in
 ; rowSize -> size of row in matrix
 ; rowIdx -> index of searched row
 ; colIdx -> index of searched col
-; saveTo -> register to save result in
-get_matrix_offset MACRO rowSize, rowIdx, colIdx, saveTo
-mov		saveTo, rowIdx
-imul	saveTo, rowSize
-add		saveTo, colIdx 
-shl		saveTo, 3		; ((rowIdx * rowSize) + colIdx) * sizeof(double)
+mtx_off MACRO saveTo, rowSize, rowIdx, colIdx
+	mov		saveTo, rowIdx
+	imul	saveTo, rowSize
+	add		saveTo, colIdx	; (rowIdx * rowSize) + colIdx	
 ENDM
 
 
@@ -100,99 +64,147 @@ ENDM
 ; args:
 ; registerName -> name of the register to check contents
 is_zero MACRO register
-xor rax, rax				; rax = 0
-movsd xmm0, register		; xmm0 = register 
-movsd xmm1, signMaskDQ		; prepare mask for fabs
-andpd xmm0, xmm1			; perform fabs (resets sign bit)
-comisd xmm0, epsilon		; compare fabs(xmm0) to epsilon
-setb al						; set bit of al if fabs(register) <= EPSILON (about 0)
+	movss xmm1, dword ptr [removeSignMaskDD]  
+	andps register, xmm1 ; perform fabs (resets sign bit)
+	comiss register, epsilon
 ENDM
 
 
-eliminate_on_thread PROC 
-push rsi
+eliminate_on_thread PROC
+	push rsi
 	; RCX <-> threadDataPtr
 	; save data to registers
-	mov		rdx,	QWORD PTR [rcx]					; RDX = double* matrix
+	mov		rdx,	QWORD PTR [rcx]					; RDX = float* matrix
 	movsxd	r8,		DWORD PTR [rcx + colsOff]		; R8  = int cols (rowSize)
-	movsxd	r9,		DWORD PTR [rcx + pivotRowIdxOff]; R9  = int pivotRowidx
-	movsxd	r10,	DWORD PTR [rcx + startRowOff]	; R10 = int startRowIdx
+	movsxd	r9,		DWORD PTR [rcx + pivotRowIdxOff]; R9  = int pivotRowidx (pivotColIdx)
+	movsxd	r10,	DWORD PTR [rcx + startRowOff]	; R10 = int startRowIdx (currRow)
 	movsxd	r11,	DWORD PTR [rcx + endRowOff]		; R11 = int endRowIdx
 
-; pivotColIdx == pivotRowIdx
-; startRowIdx == currRow
 _elimStart:
 	cmp r10, r11	; if (currRow >= endRowIdx)
 	jge _finishElim ;	break
 
 	cmp r10, r9		; if (currRow == pivotRow)
-	je _endLoop		;	continue	(skip row)
+	je _endLoop	;	continue	(skip row)
 
-	get_matrix_offset r8, r10, r9, rcx	; factor = value at (currRow, pivotColIdx)
-	movsd xmm0, QWORD PTR [rdx + rcx]	; save this at xmm0	
+	mtx_off rax, r8, r10, r9 ; factor = value at (currRow, pivotColIdx)
 
+	movss xmm0, DWORD PTR [rdx + rax * floatSize] ; load factor to XMM0
+	movss xmm5, xmm0
 	is_zero xmm0	; if (isZero(val))
-	cmp rax, 1		;	continue (skip row)
-	je	_endLoop
+	jbe _endLoop	;	continue (skip row)
 
-	movsd xmm0, QWORD PTR [rdx + rcx]
-	movsd xmm1, flipSignMask	; load flipping sign mask
-	xorpd xmm0, xmm1			; flip the sign of xmm0
-				; sign is flipped for vectorization simplicity
-				; more about in _elimLoopAvx
+	movss xmm1, flipSignMask	; load flipping sign mask
+	xorps xmm5, xmm1			; flip the sign of xmm0
+	vbroadcastss ymm4, xmm5		; sign is flipped for vectorization
+								; factor vector
 
-	vbroadcastsd ymm4, xmm0 
-	mov rax, r8		; RAX <-> elementsToSubtract
-	sub rax, r9		; elementsToSubtract = rowSize - currRow(pivotColIdx)
+	mov rcx, r8	; RCX = columns to eliminate
+	sub rcx, r9
 
-	get_matrix_offset r8, r9, r9, rsi	; Load pivot first element offset
+	mtx_off rsi, r8, r9, r9 	; Load pivot first element offset
 	_elimLoopAvx:
-	cmp rax, 4						; if (elementsLeft < 4)
-	jl _elimLoopNormal				;	jump of out 
+		cmp rcx, 8						; if (elementsLeft < 4)
+		jl _elimLoopNormal				;	jump of out 
 
-	vmovupd ymm2, ymmword ptr [rdx + rcx]		; Load destiny values
-	vmovupd ymm3, ymmword ptr [rdx + rsi]		; Load pivot values
+		vmovups ymm2, ymmword ptr [rdx + rax * floatSize]	; Load destiny values
+		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize]	; Load pivot values
 
-	vfmadd231pd ymm2, ymm3, ymm4	; ymm2 += ymm3 * ymm4
-						; multiply pivot values by negated factor
-						; ymm2 += pivotVals * (-factor)
-						; ymm2 -= pivotVals * factor
+		vfmadd231ps ymm2, ymm3, ymm4	; ymm2 += ymm3 * ymm4
+										; multiply pivot values by negated factor
+										; ymm2 += pivotVals * (-factor)
+										; ymm2 -= pivotVals * factor
 
-	vmovupd ymmword ptr [rdx + rcx], ymm2		; save result
+		vmovups ymmword ptr [rdx + rax * floatSize], ymm2	; save result
 
-	add rsi, sizeOfYMM				; move pivot ptr to next values
-	add rcx, sizeOfYMM				; move goal ptr to next values
-	sub rax, doublesInYMM			; reduce number of elements left
-	jmp _elimLoopAvx				
+		add rsi, ymmFloats				; move pivot ptr to next values
+		add rax, ymmFloats				; move goal ptr to next values
+		sub rcx, ymmFloats
+		jmp _elimLoopAvx				
 
 	_elimLoopNormal:
-	cmp rax, 0							; perform if there are elements left
-	jle _endLoop						; end if no left
+		cmp rcx, 0			; perform if there are elements left
+		jle _endLoop		; end if no left
 
-	movsd xmm1, QWORD PTR [rdx + rsi]	; load pivot value
-	mulsd xmm1, xmm0					; multiply pivot by factor
-	movsd xmm2, QWORD PTR [rdx + rcx]	; load row to subtract from
-	addsd xmm2, xmm1					; subtract (add negated factor * pivotVal)
-	movsd QWORD PTR [rdx + rcx], xmm2	; save result
+		movss xmm1, dword ptr [rdx + rsi * floatSize]	; load pivot value
+		mulss xmm1, xmm5								; multiply pivot by factor
+		movss xmm3, dword ptr [rdx + rax * floatSize]	; load row to subtract from
+		addss xmm3, xmm1								; subtract (add negated factor * pivotVal)
+		movss dword ptr [rdx + rax * floatSize], xmm3	; save result
 
-	add rsi, sizeOfDouble				; move pivot ptr to next value
-	add rcx, sizeOfDouble				; move goal element to next value
-	dec rax								; decrement number of elements left
-	jmp _elimLoopNormal
-
+		add rsi, floatSize	; move pivot ptr to next value
+		add rax, floatSize	; move goal element to next value
+		dec rcx				; decrement number of elements left
+		jmp _elimLoopNormal
 
 _endLoop:
 	inc r10
 	jmp _elimStart
 
 _finishElim:
-
 	pop rsi
-
 	xor rax, rax	; return 0
 	ret
 eliminate_on_thread ENDP
 
+
+
+has_solutions PROC
+	; RCX = float* matrix_ptr
+	; RDX = num_rows
+	; R8 = num_cols
+
+	dec rdx ; iterate from end, start from num_rows - 1
+
+	mov r9, r8	; R9 = numVariables
+	dec r9
+
+	
+	mtx_off rax, r8, 0, 0
+_checkingSolutionsStart:
+	cmp rdx, 0	; if (rowIdx < 0) break
+	jl _checkingSolutionsEnd
+
+	mov r10, 1 ; R10 = allZeros
+	xor r11, r11 ; R11 = columnIdx
+
+	_chkSolutionColumnIt:
+		cmp r11, rdx
+		jge _chkSolutionColumnEnd
+
+		movss xmm0, dword ptr [rcx + rax * floatSize]
+
+		is_zero xmm0
+		jbe _checkedIsZero
+
+		cmp r10, 1		; if (allZeros == false)
+		je _notAllZeros ;	allZeros = false
+		xor rax, rax	; else
+		ret				;	return false
+
+		_notAllZeros:
+			xor r10, r10; allZeros = false
+
+		_checkedIsZero:
+			inc rax		; move to next element
+			inc r11		; iterate to next column
+			jmp _chkSolutionColumnIt
+	_chkSolutionColumnEnd:
+
+	test r10, r10			; if (allZeros == false)
+	je _checkingSolutionsEnd ;	continue
+
+	movss xmm0, dword ptr [rcx + rax * floatSize]
+	is_zero xmm0			; if (xmm0 == 0.0)
+	jbe _checkingSolutionsEnd;	continue
+
+	xor rax, rax			; else
+	ret						; return false
+
+_checkingSolutionsEnd:
+	mov rax, 1	; return true
+	ret
+has_solutions ENDP
 
 
 
@@ -204,135 +216,141 @@ eliminate_on_thread ENDP
 ;  - 2: system has infinite number of solutions.
 ;
 ; args:
-; double* matrix -> RCX
+; float* matrix -> RCX
 ; int rows -> RDX
 ; int cols -> R8
 ; int num_threads -> R9
 solve_linear_system PROC
 	
 ; PREPARING MAIN LOOP
-	push_non_volatile_regs		; save non-volatile registers
-	
-	mov rbx, r9					; RBX = num of threads
-
-	mov r12, r8					; possible_iterations <-> R12
+	push r12
+	push r13
+	push r14
+	push r15
+	push rsi
+	push rdi
+								; R8 = row_size
+	mov rbx, r9					; RBX = num_of_threads
+	mov r15, rdx				; R15 = num_of_rows
+	mov r12, r8					; R12 = num_of_iterations
 	dec r12						; variables_num = cols - 1
-	write_if_smaller r12, rdx	; possible_iterations = min(rows, variables_num)
+	write_min r12, rdx			; num_of_iterations = min(rows, variables_num)
 
-	xor r13, r13				; curr_row <-> R13 = 0
-
+	xor r13, r13				; R13 = curr_row
 
 ; MAIN LOOP
-_equationsIteration:
-	cmp r13, r12							; if(curr_row >= possible_iterations)
-	jge	_endLoop							;	end the loop
+_solveLoopStart:
+	cmp r13, r12		; if(curr_row >= possible_iterations)
+	jge	_solveLoopEnd	; end the loop
 
-	get_matrix_offset r8, r13, r13, r14		; pivot_ptr_offset <-> R14
+	mtx_off r14, r8, r13, r13	; R14 = curr_pivot_element_offset
+								; pivot_el_row == pivot_el_col
 	
-	movsd xmm0, QWORD PTR [rcx + r14]		; pivot_val <-> xmm3
+	movss xmm0, dword ptr [rcx + r14 * floatSize] ; XMM0 = pivot_val
 
-	is_zero xmm0							; if (pivot_val != 0.0)
-	cmp rax, 0								;	 move along
-	je _pivot_row_normalization				; else 
-						;	fallthrough and try swap rows
+	is_zero xmm0				; if (pivot_val == 0.0) swap rows
+	jnbe _pivot_normalization	; else goto normalization
 
-; IF PIVOT IS ZERO FIND NON ZERO PIVOT AND SWAP ROWS
-_pivot_is_zero:							; find non_zero pivot row
-	mov r11, r13						; preparing loop (it_row = curr_row + 1)		
-	inc r11
+	_pivot_is_zero:
+		mov rdx, r13	; RDX = it_row iterator for searching non zero		
+		inc rdx			; it_row = curr_row + 1	
 
-	_itStart:
-		cmp r11, rdx							; if(it_row >= rowsNum)
-		jge _notFound							;	jump to not found
+		_itStart:
+			cmp rdx, r15	; if(it_row >= rowsNum)
+			jge _notFound	;	jump to not found
 
-		get_matrix_offset r8, R11, r13, r10		; get element offset into r10
-		movsd xmm0, QWORD PTR [rcx + r10]		; move element value into xmm0
-		is_zero xmm0							; check if xmm0 == 0? (result in rax)
-		cmp rax, 0								; if is_zero(xmm0) == false
-		je _found								; jump to swap_rows
+			mtx_off r10, r8, rdx, r13 						; get element offset into r10
+			movss xmm0, dword ptr [rcx + r10 * floatSize]	; move element value into xmm0
+		
+			is_zero xmm0 ; if (xmm0 == 0.0)
+			jnbe _found	 ;	jump to swap_rows
 
-		inc r11									; else increment curr_row
-		jmp _itStart
+			inc rdx		 ; else
+			jmp _itStart ;	check next row
 
 		_notFound:
-		inc r13									; non-zero pivot not found => skip iteration
-		jmp _equationsIteration
+			inc r13				
+			jmp _solveLoopStart	; skip iteration
 
-		_found:										; found, so swap rows
-		mov rdi, r10							; RDI <-> element A to swap ptr
-		mov rsi, r14 							; RSI <-> element B to swap ptr
-		
-		mov r10, r8								; R10 <-> elementsToSwap
-		sub r10, r13							; elementsToSwap  = rowSize - columnsToReduce
+		_found:	; swap rows
+			mov rsi, r13; RSI = element A to swap ptr
+			mov rdi, r10; RDI = element B to swap ptr
 
-		_avxSwap:	; copy as may elements as possible using AVX 
-			cmp r10, 4					; if there aren't enough elements to swap with AVX
-			jl _simpleSwap				; jump to normal swap
+			mov r10, r8	
+			sub r10, r13
+			mov r11, r10 ; R11 = iterations of simple swap
+			shr r10, 3 ; R10 = iterations with AVX
+			and r11, 7 ; R11 = iterations with AVX
+
+			_avxSwap:
+				test r10, r10
+				jz _simpleSwap
+
+				vmovups ymm0, ymmword ptr[rcx + rsi * 4]
+				vmovups ymm1, ymmword ptr [rcx + rdi * 4]
+
+				vmovups ymmword ptr [rcx + rsi * 4], ymm1
+				vmovups ymmword ptr [rcx + rdi * 4], ymm0
+
+				add rsi, ymmFloats
+				add rdi, ymmFloats
+				dec r10
+				jmp _avxSwap
+
 			
-			vmovupd ymm0, [rcx + rsi]	; Load 32 bytes from row1
-			vmovupd ymm1, [rcx + rdi]	; Load 32 bytes from row2
+			_simpleSwap:
+				test r11, r11
+				jz _pivot_normalization
 
-			vmovupd [rcx + rsi], ymm1	; Write row2 data into row1
-			vmovupd [rcx + rdi], ymm0	; Write row1 data into row2
-			
-			add rsi, sizeOfYMM			; increment ptr to next elements
-			add rdi, sizeOfYMM			; increment ptr to next elements
-			sub r10, doublesInYMM		; decrease number of elements left by 4
-			jmp _avxSwap
+				movss xmm0, dword ptr [rcx + rsi * 4]
+				movss xmm1, dword ptr [rcx + rdi * 4]
 
-			
-		_simpleSwap:	; copy element one by one
-			cmp r10, 0							; if there aren't any elements left to swap
-			jle _pivot_row_normalization		; jump to code when pivot is normalization
-			
-			movsd xmm0, QWORD PTR [rcx + rsi]	; load value A from ptr 1
-			movsd xmm1, QWORD PTR [rcx + rdi]	; load value B from ptr 2
+				movss dword ptr [rcx + rsi * 4], xmm1
+				movss dword ptr [rcx + rdi * 4], xmm0
 
-			movsd QWORD PTR [rcx + rsi], xmm1	; save value B to ptr 1
-			movsd QWORD PTR [rcx + rdi], xmm0	; save value A to ptr 2
-
-			add rsi, sizeOfDouble				; move by sizeof(double)
-			add rdi, sizeOfDouble				; move by sizeof(double)
-			dec r10								; decrement number of elements left
-			jmp _simpleSwap
+				add rsi, floatSize
+				add rdi, floatSize
+				dec r11	
+				jmp _simpleSwap
 
 
-; IF PIVOT IS NON ZERO CONTINUE NORMALLY
-_pivot_non_zero:
-_pivot_row_normalization:
+	_pivot_normalization:
 	
-	get_matrix_offset r8, r13, r13, rsi	; RSI = currentPivotOffset	
+		mov rsi, r14	; RSI = currentPivotOffset	
 
-	mov r10, r8							; R10 <-> elementsToNormalize
-	sub r10, r13						; elementsToNormalize = rowSize - columnsToNormalize
+		mov r10, r8	
+		sub r10, r13
+		mov r11, r10	; R11 = iterations of simplenormalization
+		shr r10, 3		; R10 = iterations with AVX normalization
+		and r11, 7
 
-	movsd xmm0, QWORD PTR [rcx + r14]	; xmm0 = current pivot value
+		movss xmm0, dword ptr [rcx + r14 * floatSize] ; XMM0 = current pivot value
 
-	vbroadcastsd ymm1, xmm0 			; YMM1 = vector of pivot values
+		vbroadcastss ymm0, xmm0 ; YMM0 vector of pivot values
 
-	_avxNormalization:
-		cmp r10, 4					; If there aren't enough elements to normalize with AVX
-		jl _simpleNormalization		; Jump to normal division
+		_avxNormalization:
+			test r10, r10
+			jz _simpleNormalization
 
-		vmovupd ymm0, [rcx + rsi]	; Load 4 doubles from row
-		vdivpd ymm0, ymm0, ymm1		; Write row2 data into row
-		vmovupd [rcx + rsi], ymm0	; Save 4 doubles to row
+			vmovups ymm1, ymmword ptr [rcx + rsi * 4]
+			vdivps ymm1, ymm1, ymm0
+			vmovups ymmword ptr [rcx + rsi * 4], ymm1
 			
-		add rsi, sizeOfYMM			; increment ptr to next elements
-		sub r10, doublesInYMM		; decrease number of elements left by 4
-		jmp _avxNormalization		; loop 
+			add rsi, ymmFloats
+			dec r10
+			jmp _avxNormalization
 
-	_simpleNormalization:
-		cmp r10, 0							; if there aren't any elements left to swap
-		jle _elimination					; jump to elimination when finished
+		_simpleNormalization:
+			test r11, r11
+			jz _elimination
 			
-		movsd xmm1, QWORD PTR [rcx + rsi]	; load element value to xmm1
-		divsd xmm1, xmm0					; divide value by pivot
-		movsd QWORD PTR [rcx + rsi], xmm1	; load divided value to memory
+			movss xmm1, dword ptr [rcx + rsi * 4]
+			divss xmm1, xmm0
+			movss dword ptr [rcx + rsi * 4], xmm1
 
-		add rsi, sizeOfDouble				; move by sizeof(double)
-		dec r10								; decrement number of elements left
-		jmp _simpleNormalization			; loop
+			inc rsi
+			dec r11
+			jmp _simpleNormalization
 
 _elimination:
 	push rcx
@@ -343,7 +361,7 @@ _elimination:
 	mov DWORD PTR[gaussDataArray + colsOff],		r8d
 	mov DWORD PTR[gaussDataArray + pivotRowIdxOff],	r13d
 	mov DWORD PTR[gaussDataArray + startRowOff],	0
-	mov DWORD PTR[gaussDataArray + endRowOff],		edx
+	mov DWORD PTR[gaussDataArray + endRowOff],		r15d
 
 	lea rcx, [gaussDataArray]
 
@@ -353,16 +371,27 @@ _elimination:
 	pop rdx
 	pop rcx
 
-	inc r13									; ++curr_row
-	jmp _equationsIteration					; _equatiosIteration loop
+	inc r13					; ++curr_row
+	jmp _solveLoopStart		; _equatiosIteration loop
 
 
 ; END OF THE MAIN LOOP
-_endLoop:
-	
-	pop_non_volatile_regs		; popping back non-volatile registers
+_solveLoopEnd:
+	; RCX = float* matrix_ptr
+	; RDX = num_rows
+	; R8 = num_cols
 
-	mov rax, 2
+	mov rdx, r15
+	
+	call has_solutions
+
+	pop rdi
+	pop rsi
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+
 	ret
 solve_linear_system ENDP
 
