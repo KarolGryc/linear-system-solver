@@ -15,10 +15,10 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="LinSysSolverAsmLib.cpp">
+    <ClCompile Include="LinSysSolverAsmLibDebugInterface.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Lib.cpp">
+    <ClCompile Include="Libc.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

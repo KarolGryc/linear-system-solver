@@ -132,9 +132,9 @@ _elimStart:
 		addss xmm3, xmm1								; subtract (add negated factor * pivotVal)
 		movss dword ptr [rdx + rax * floatSize], xmm3	; save result
 
-		add rsi, floatSize	; move pivot ptr to next value
-		add rax, floatSize	; move goal element to next value
-		dec rcx				; decrement number of elements left
+		inc rsi		; move pivot ptr to next value
+		inc rax		; move goal element to next value
+		dec rcx		; decrement number of elements left
 		jmp _elimLoopNormal
 
 _endLoop:
@@ -159,8 +159,8 @@ has_solutions PROC
 	mov r9, r8	; R9 = numVariables
 	dec r9
 
-	
-	mtx_off rax, r8, 0, 0
+	xor rax, rax ; RAX = currElOffset (we are starting from the first one)
+
 _checkingSolutionsStart:
 	cmp rdx, 0	; if (rowIdx < 0) break
 	jl _checkingSolutionsEnd
@@ -169,7 +169,7 @@ _checkingSolutionsStart:
 	xor r11, r11 ; R11 = columnIdx
 
 	_chkSolutionColumnIt:
-		cmp r11, rdx
+		cmp r11, r9
 		jge _chkSolutionColumnEnd
 
 		movss xmm0, dword ptr [rcx + rax * floatSize]
@@ -191,15 +191,20 @@ _checkingSolutionsStart:
 			jmp _chkSolutionColumnIt
 	_chkSolutionColumnEnd:
 
-	test r10, r10			; if (allZeros == false)
-	je _checkingSolutionsEnd ;	continue
+	test r10, r10				; if (allZeros == false)
+	jz _checkingSolutionsItEnd	;	continue
 
 	movss xmm0, dword ptr [rcx + rax * floatSize]
-	is_zero xmm0			; if (xmm0 == 0.0)
-	jbe _checkingSolutionsEnd;	continue
+	is_zero xmm0				; if (xmm0 == 0.0)
+	jbe _checkingSolutionsItEnd	;	continue
 
 	xor rax, rax			; else
 	ret						; return false
+
+_checkingSolutionsItEnd:
+	inc rax
+	dec rdx
+	jmp _checkingSolutionsStart
 
 _checkingSolutionsEnd:
 	mov rax, 1	; return true
@@ -207,6 +212,15 @@ _checkingSolutionsEnd:
 has_solutions ENDP
 
 
+remove_close_zeros PROC
+	; RCX = float* matrix_ptr
+	; RDX = num_rows
+	; R8 = num_cols
+
+
+
+
+remove_close_zeros ENDP
 
 ; PROCEDURE solve_linear_system
 ; Solves linear system in-place.
@@ -382,8 +396,10 @@ _solveLoopEnd:
 	; R8 = num_cols
 
 	mov rdx, r15
-	
 	call has_solutions
+
+	mov rdx, r15
+	call remove_close_zeros
 
 	pop rdi
 	pop rsi
