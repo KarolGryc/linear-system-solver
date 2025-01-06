@@ -1,6 +1,5 @@
 #include <Windows.h>
 #include <stdio.h>
-#include "Lib.h"
 
 typedef int(__fastcall *MatrixSolveFunc)(float*, int, int, int);
 
