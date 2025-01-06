@@ -11,6 +11,9 @@ GaussJordanThreadData ENDS
 
 .const
 	MAX_THREADS     EQU 64
+	NO_SOLUTIONS	EQU 0
+	ONE_SOLUTION	EQU 1
+	INF_SOLUTIONS	EQU 2
 	epsilon			REAL4 1.0e-9 
 	zeroVal			dd 0.0
 	maxThreads		dq MAX_THREADS
@@ -99,6 +102,7 @@ eliminate_on_thread PROC
 	mov	r9,		pivotRowIdx	; R9  = int pivotRowidx (pivotColIdx)
 	mov	r10,	QWORD PTR [rcx + startRowOff]	; R10 = int startRowIdx (currRow)
 	mov	r11,	QWORD PTR [rcx + endRowOff]		; R11 = int endRowIdx
+	movss xmm4, flipSignMask	; load flipping sign mask
 
 _elimStart:
 	cmp r10, r11	; if (currRow >= endRowIdx)
@@ -114,8 +118,7 @@ _elimStart:
 	is_zero xmm0	; if (isZero(val))
 	jbe _endLoop	;	continue (skip row)
 
-	movss xmm1, flipSignMask	; load flipping sign mask
-	xorps xmm5, xmm1			; flip the sign of xmm0
+	xorps xmm5, xmm4			; flip the sign of xmm0
 	vbroadcastss ymm4, xmm5		; sign is flipped for vectorization
 								; factor vector
 
@@ -124,18 +127,24 @@ _elimStart:
 
 	mtx_off rsi, r8, r9, r9 	; Load pivot first element offset
 	_elimLoopAvx:
-		cmp rcx, 8						; if (elementsLeft < 4)
-		jl _elimLoopNormal				;	jump of out 
+		; Fully unrolled AVX loop
+		cmp rcx, 16
+		jl _elimLoopNormal
 
-		vmovups ymm2, ymmword ptr [rdx + rax * floatSize]	; Load destiny values
-		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize]	; Load pivot values
-		vfmadd231ps ymm2, ymm3, ymm4	; ymm2 += ymm3 * ymm4 (ymm2 += pivotVals * (-factor))
-		vmovups ymmword ptr [rdx + rax * floatSize], ymm2	; save result
+		vmovups ymm2, ymmword ptr [rdx + rax * floatSize]
+		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize]
+		vfmadd231ps ymm2, ymm3, ymm4
+		vmovups ymmword ptr [rdx + rax * floatSize], ymm2
 
-		add rsi, ymmFloats				; move pivot ptr to next values
-		add rax, ymmFloats				; move goal ptr to next values
-		sub rcx, ymmFloats
-		jmp _elimLoopAvx				
+		vmovups ymm2, ymmword ptr [rdx + rax * floatSize + ymmFloats * floatSize]
+		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize + ymmFloats * floatSize]
+		vfmadd231ps ymm2, ymm3, ymm4
+		vmovups ymmword ptr [rdx + rax * floatSize + ymmFloats * floatSize], ymm2
+
+		add rsi, ymmFloats * 2
+		add rax, ymmFloats * 2
+		sub rcx, ymmFloats * 2
+		jmp _elimLoopAvx		
 
 	_elimLoopNormal:
 		cmp rcx, 0			; perform if there are elements left
@@ -316,33 +325,34 @@ _solveLoopStart:
 _pivot_is_zero:
 	mov rdx, r13	; RDX = it_row iterator for searching non zero		
 	inc rdx			; it_row = curr_row + 1	
+	mtx_off r10, r8, rdx, r13 						; get element offset into r10
 
 	_itStart:
 		cmp rdx, r15	; if(it_row >= rowsNum)
 		jge _notFound	;	jump to not found
 
-		mtx_off r10, r8, rdx, r13 						; get element offset into r10
 		movss xmm0, dword ptr [rcx + r10 * floatSize]	; move element value into xmm0
 		
 		is_zero xmm0 ; if (xmm0 == 0.0)
 		jnbe _found	 ;	jump to swap_rows
 
+		add r10, r8
 		inc rdx		 ; else
 		jmp _itStart ;	check next row
 
 	_notFound:
 		inc r13				
-		jmp _solveLoopStart	; skip iteration
+		jmp _solveLoopStart	; skip iteration (probably should end with no solutions?)
 
 	_found:	; swap rows
-		mov rsi, r13 ; RSI = element A to swap ptr
+		mov rsi, r14 ; RSI = element A to swap ptr
 		mov rdi, r10 ; RDI = element B to swap ptr
 
-		mov r10, r8	
-		sub r10, r13
-		mov r11, r10 ; R11 = iterations of simple swap
+		mov r10, r8
+		sub r10, r13 ; R10 - R13 = elements left in row
+		mov r11, r10
 		shr r10, 3	; R10 = iterations with AVX
-		and r11, 7 ; R11 = iterations with AVX
+		and r11, 7 ; R11 = iterations of simple swap
 
 		_avxSwap:
 			test r10, r10
@@ -416,7 +426,7 @@ _pivot_normalization:
 
 _elimination:
 	push r8		; save rowSize
-	push rcx	; save 
+	push rcx	; save matrix ptr
 
 	mov pivotRowIdx, r13		; set global current pivot row
 	call eliminate_multithread	; eliminate using multi-threading
@@ -428,15 +438,15 @@ _elimination:
 
 
 _solveLoopEnd:
-	mov rcx, matrixAddr
+	mov rcx, matrixAddr		; change solutions ~0.0 to =0.0
 	mov rdx, numRows
 	mov r8, numCols
 	call remove_close_zeros
 
-	mov rcx, matrixAddr
+	mov rcx, matrixAddr		; get number of solutions
 	mov rdx, numRows
 	mov r8, numCols
-	call has_solutions
+	call number_of_solutions
 
 	pop rdi	; retrieve registers
 	pop rsi
@@ -482,12 +492,18 @@ _removingZerosFinish:
 remove_close_zeros ENDP
 ; <------------------------------------------------------->
 
-
+; !!!
+; !!!
+; !!!
+; PROCEDURES BELOW NEED TO BE CHANGED
+; !!!
+; !!!
+; !!!
 
 ; <------------------------------------------------------->
-; PROCEDURE has_solutions
+; PROCEDURE is_sovable
 ; If solved matrix has solutions returns 1 in RAX else returns 0.
-has_solutions PROC
+is_sovable PROC
 	; RCX = float* matrix_ptr
 	; RDX = num_rows
 	; R8 = num_cols
@@ -547,7 +563,81 @@ _checkingSolutionsItEnd:
 _checkingSolutionsEnd:
 	mov rax, 1	; return true
 	ret
-has_solutions ENDP
+is_sovable ENDP
+; <------------------------------------------------------->
+
+
+; <------------------------------------------------------->
+; PROCEDURE number_of_solutions
+; Checks number of solutions in system.
+; RCX = float* matrixPtr
+; RDX = int64_t numRows
+; R8 = in64_t numCols
+; Returns:
+;	- 0: there are no solutions
+;	- 1: there is exactly one solution
+;	- 2: there is infinite number of solutions
+number_of_solutions PROC
+	push r12
+	push r13
+	push r14
+	push r15
+
+	mov r12, rcx ; R12 = matrixPtr
+	mov r13, rdx ; R13 = numRows
+	mov r14, r8  ; R14 = numCols
+	mov r15, r14 ; R15 = variablesNum
+	dec r15		 ; variablesNum = numCols - 1
+
+	call is_sovable		; if (is not solvable)
+	test rax, rax	
+	jnz _checkInfiniteSolutions
+	cmp r15, r13				; return variablesNum > numRows ?
+	jg _infiniteSolutionResult	; INF_SOLUTIONS : 
+	jmp _noSolutionResult		; NO_SOLUTIONS 
+
+_checkInfiniteSolutions:
+	
+	xor r10, r10	; R10 = currRow
+_checkInfRowLoop:	; while (currRow < variablesNum)
+	cmp r10, r15
+	jge _oneSolutionResult
+
+	xor r11, r11	; R11 = currCol
+	_checkRowOnlyZeroLoop:	; Check if row contains only zeros
+		cmp r11, r14
+		jge _infiniteSolutionResult
+
+		mov rdx, [r12 + r11 * floatSize] ; if matrix.at(row,col) == 0 continue
+		test rdx, rdx
+		jnz _checkRowOnlyZeroEnd
+
+		inc r11
+		jmp _checkRowOnlyZeroLoop
+
+	_checkRowOnlyZeroEnd:
+	add r12, r14	; matrixPtr += numCols (move to next row)
+	inc r10
+	jmp _checkInfRowLoop
+
+_noSolutionResult:
+	mov rax, NO_SOLUTIONS
+	jmp _numberOfSolutionsCleanup
+
+_oneSolutionResult:
+	mov rax, ONE_SOLUTION
+	jmp _numberOfSolutionsCleanup
+
+_infiniteSolutionResult:
+	mov rax, INF_SOLUTIONS
+
+_numberOfSolutionsCleanup:
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+	ret
+number_of_solutions ENDP
 ; <------------------------------------------------------->
 
 END

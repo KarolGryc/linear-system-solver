@@ -15,7 +15,6 @@ class LibraryEnum(Enum):
     C_LIB = 1
     ASM_LIB = 2
 
-
 class LinearEquationSolver:
     def __init__(self, num_threads : int, lib : LibraryEnum):
         self._num_threads = num_threads
@@ -23,9 +22,9 @@ class LinearEquationSolver:
         # load the library, move to separate function
         dir = os.path.dirname(os.path.abspath(__file__))
         if lib == LibraryEnum.C_LIB:
-            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLib\x64\Release\LinSysSolverLib.dll")
+            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLibC\x64\Release\LinSysSolverLib.dll")
         elif lib == LibraryEnum.ASM_LIB:
-            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LowLevelLib\x64\Release\LinSysSolverAsm.dll")
+            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLibAsm\x64\Release\LinSysSolverAsm.dll")
         else:
             raise ValueError("Invalid library selected.")
 
@@ -286,13 +285,9 @@ class MatrixInputFrame(MenuFrame):
             raise ValueError("Invalid source type.")
         
     def _get_file_input(self) -> str:
-        try:
-            file_path = self.file_input_frame.get_file_path()
-            with open(file_path, "r", encoding='utf8') as file:
-                return file.read()
-            
-        except FileNotFoundError:
-            raise FileNotFoundError(f'File "{file_path}" not found.')
+        file_path = self.file_input_frame.get_file_path()
+        with open(file_path, "r", encoding='utf8') as file:
+            return file.read()
 
     def _get_text_input(self) -> str:
         return self.text_input_frame.get_text()
@@ -413,7 +408,7 @@ class MainApp(tk.Tk):
             equations = parse_linear_equations(raw_equations)
 
             eq_matrix, var = equations_to_matrix(equations)
-            
+
             solver = LinearEquationSolver(num_threads, library)
             matrix, execution_time, result_str = solver.solve(eq_matrix)
             
@@ -425,10 +420,7 @@ class MainApp(tk.Tk):
                 matrix = self._result_string(matrix, var)
                 self._result_frame.set_result(matrix)
 
-        except ValueError as e:
-            messagebox.showerror("Error", str(e))
-
-        except FileNotFoundError as e:
+        except (ValueError, FileNotFoundError) as e:
             messagebox.showerror("Error", e)
 
     # refactor needed
@@ -436,16 +428,11 @@ class MainApp(tk.Tk):
         result_str = ""
         if len(variables) == 0:
             return "System has no variables."
-        elif len(variables) > 2000:
+        elif len(variables) > 256:
             return "Too many variables to display."
-        for var in variables:
-            result_str += f"{var} = {result[variables.index(var)][-1]}\n"
+        for v in variables:
+            result_str += f"{v} = {result[variables.index(v)][-1]}\n"
         return result_str
-
-    def _quit(self):
-        self.quit()
-        self.destroy()
-
 
 if __name__ == "__main__":
     app = MainApp("Linear equation system solver", (600, 400))

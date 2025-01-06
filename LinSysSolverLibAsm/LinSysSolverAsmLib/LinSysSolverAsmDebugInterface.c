@@ -16,7 +16,6 @@ int main()
     }
 
     MatrixSolveFunc solveAsm = (MatrixSolveFunc)GetProcAddress(dllHandle, "solve_linear_system");
-
     //float matrix[] = {
     //    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     //    0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0,
@@ -28,16 +27,24 @@ int main()
     //    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 8.0,
     //};
 
+    //float matrix[] = {
+    //    1.0, 1.0, 2.0,
+    //    1.0, 1.0, 2.0, 
+    //};
+
     float matrix[] = {
-        1.0, 1.0, 2.0,
-        1.0, -1.0, 2.0, 
+        0.f,1.f, 0.f, 0.f, 3.f, 0.f,1.f, 0.f, 0.f, 3.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+        0.f, 0.f, 1.f, 0.f, 5.f,0.f,1.f, 0.f, 0.f, 3.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+        0.f, 0.f, 0.f, 1.f, 7.f,0.f,1.f, 0.f, 0.f, 3.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+        -1.f, 1.f, 1.f, 1.f, 0.f,0.f,1.f,0.f, 0.f, 3.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
     };
 
-    int rows = 2;
-    int cols = 3;
-    int num_threads = 2;
+    int rows = 4;
+    int cols = 16;
+    int num_threads = 1;
 
-    solveAsm(matrix, rows, cols, num_threads);
+    int x = solveAsm(matrix, rows, cols, num_threads);
+    printf("%d", x);
 
     return 0;
 }

@@ -255,15 +255,7 @@ int64_t solve_linear_system(float* matrix, int64_t rows, int64_t cols, int64_t n
             *at(matrix, cols, row, c) /= pivot;
         }
 
-        // could take out loop for better performance
-        if (num_threads == 1) 
-        {
-            eliminate_single_thread(matrix, rows, cols, row);
-        }
-        else 
-        {
-            eliminate_multi_thread(matrix, rows, cols, row, num_threads);
-        }
+        eliminate_multi_thread(matrix, rows, cols, row, num_threads);
     }
 
     // remove minus zeros from result column
