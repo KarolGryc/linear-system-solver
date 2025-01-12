@@ -79,7 +79,7 @@ def parse_linear_equation(equation : str) -> dict:
     if not left_side or not right_side:
         raise ValueError(f"Invalid equation '{equation}' given.")
 
-    def parse_side(side):
+    def parse_side(side) -> dict:
         side = side.replace('--', '+').replace('-', '+-')
         
         terms = side.split('+')
@@ -108,6 +108,13 @@ def parse_linear_equation(equation : str) -> dict:
 
     left_parsed = parse_side(left_side)
     right_parsed = parse_side(right_side)
+
+    if len(left_parsed) == 0 or len(right_parsed) == 0:
+        raise ValueError(f"Invalid equation '{equation}' given.")
+
+    if len(left_parsed) == 1 and len(right_parsed) == 1:
+        if '' in left_parsed and '' in right_parsed:
+            raise ValueError(f"Invalid equation '{equation}' given.")
 
     for var, val in right_parsed.items():
         left_parsed[var] = left_parsed.get(var, 0) - val

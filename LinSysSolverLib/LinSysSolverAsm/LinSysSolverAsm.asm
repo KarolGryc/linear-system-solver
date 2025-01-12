@@ -33,8 +33,8 @@ GaussJordanThreadData ENDS
 	numRows		dq	0
 	numThreads	dq	1
 	pivotRowIdx dq	0
-    threadHandles   dq MAX_THREADS DUP(66)
-    threadData      GaussJordanThreadData MAX_THREADS DUP(<51, 51>)
+    threadHandles   dq MAX_THREADS DUP(0)
+    threadData      GaussJordanThreadData MAX_THREADS DUP(<>)
 
 .code
 ; <------------------------------------------------------->
@@ -103,21 +103,21 @@ eliminate_on_thread PROC
 	movss xmm4, flipSignMask					; load flipping sign mask
 
 _elimStart:
-	cmp r10, r11	; if (currRow >= endRowIdx)
-	jge _finishElim ;	break
+	cmp r10, r11				; if (currRow >= endRowIdx)
+	jge _finishElim				;	break
 
-	cmp r10, r9		; if (currRow == pivotRow)
-	je _endLoop		;	continue	(skip row)
+	cmp r10, r9					; if (currRow == pivotRow)
+	je _endLoop					;	continue	(skip row)
 
-	mtx_off rax, r8, r10, r9 ; factor = value at (currRow, pivotColIdx)
+	mtx_off rax, r8, r10, r9	; factor = value at (currRow, pivotColIdx)
 
-	movss xmm5, DWORD PTR [rdx + rax * floatSize] ; load factor to XMM0
+	movss xmm5, dword ptr [rdx + rax * floatSize] ; load factor to XMM0
 
 	; For maximum performance we should skip if factor == 0
 	; For ease of testing AVX performance we skip this step
 
 	xorps xmm5, xmm4			; flip the sign of xmm5 to use vfmadd231ps
-	vbroadcastss ymm4, xmm5		; spread the -factor to ymm4
+	vbroadcastss ymm5, xmm5		; spread the -factor to ymm4
 								
 	mov rcx, r8					; RCX = columns to eliminate
 	sub rcx, r9
@@ -132,8 +132,8 @@ _elimStart:
 		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize]			; load pivot
 		vmovups ymm1, ymmword ptr [rdx + rsi * floatSize + ymmSize]	; load pivot   + 64B
 
-		vfmadd231ps ymm2, ymm3, ymm4	; destiny += -factor * pivot
-		vfmadd231ps ymm0, ymm1, ymm4
+		vfmadd231ps ymm2, ymm3, ymm5	; destiny += -factor * pivot
+		vfmadd231ps ymm0, ymm1, ymm5
 
 		vmovups ymmword ptr [rdx + rax * floatSize], ymm2			; store destiny
 		vmovups ymmword ptr [rdx + rax * floatSize + ymmSize], ymm0	; store destiny + 64B
@@ -160,7 +160,7 @@ _elimStart:
 
 _endLoop:
 	inc r10			; increment row
-	jmp _elimStart	;
+	jmp _elimStart
 
 _finishElim:
 	pop rsi			; returning values of registers
@@ -173,7 +173,7 @@ eliminate_on_thread ENDP
 
 
 ; <------------------------------------------------------->
-; PROCEDURE eliminate_multithread
+; MACRO eliminate_multithread
 ; Does elimination with multiple threads
 eliminate_multithread MACRO
 	push r12
@@ -385,7 +385,6 @@ _pivot_is_zero:
 
 
 _pivot_normalization:
-	
 	mov rsi, r14	; RSI = currentPivotOffset	
 	mov r10, r8		; R10 = iterations with AVX normalization
 	sub r10, r13
@@ -441,7 +440,7 @@ _solveLoopEnd:
 	mov rcx, matrixAddr		; get number of solutions
 	mov rdx, numRows
 	mov r8, numCols
-	call number_of_solutions
+	call solutions_in_system
 
 	pop rbx ; retrieve registers
 	pop rdi	
@@ -497,9 +496,9 @@ remove_close_zeros ENDP
 ; R8 = num_cols
 solutions_in_system PROC
     ; Constants
-    NO_SOLUTIONS        equ 0
-    ONE_SOLUTION        equ 1
-    INFINITE_SOLUTIONS  equ 2
+    NO_SOLUTIONS        EQU 0
+    ONE_SOLUTION        EQU 1
+    INFINITE_SOLUTIONS  EQU 2
 
 	push r12				; store registers
 	push r13
@@ -521,35 +520,50 @@ _loopRows:
 		cmp r12, r9			; while (curr_col < num_of_variables) 
 		jge _endCheckCols
 
-		movss xmm0, dword ptr [rcx + r13 * floatSize]
-		is_zero xmm0
-		jbe _nextItCheckColumns
-
-		mov rax, 1
-		inc r10
-		jmp _enchCheckCols
+		movss xmm0, dword ptr [rcx + r13 * floatSize] ; copy checked coefficient
+		is_zero xmm0				; if (coeff == 0.0)  
+		jbe _nextItCheckColumns		;		continue
+									
+		mov rax, 1					; non_zero_found = treu
+		inc r10						; ++rank
+		jmp _endCheckCols			; break
 
 	_nextItCheckColumns:
 		inc r12
 		inc r13
 		jmp _checkColumns
+
 	_endCheckCols:
 
+	test rax, rax		; if (non_zero_found)
+	jnz _loopRowsNextIt ;	continue
+
+	mtx_off r13, r8, r11, r9
+	movss xmm0, dword ptr [rcx + r13 * floatSize] ; copy result value
+	is_zero xmm0		; if (!is_zero(result_value))
+	jbe _loopRowsNextIt	;	continue
+						
+	jmp _noSolutions	; else
+						;	return NO_SOLUTIONS
+_loopRowsNextIt:
+	inc r11
+	jmp _loopRows
 
 _checkRank:
-    cmp r10, r9               ; if rank < num_of_variables
-    jl InfiniteSolutions      ;     return INFINITE_SOLUTIONS
+    cmp r10, r9               ; if (rank < num_of_variables)
+    jl _infiniteSolutions     ;     return INFINITE_SOLUTIONS
+	
 
 _oneSolution:
-    mov eax, ONE_SOLUTION     ; return ONE_SOLUTION
+    mov rax, ONE_SOLUTION     ; return ONE_SOLUTION
     jmp _returnSolutions
 
 _noSolutions:
-    mov eax, NO_SOLUTIONS     ; return NO_SOLUTIONS
+    mov rax, NO_SOLUTIONS     ; return NO_SOLUTIONS
     jmp _returnSolutions
 
 _infiniteSolutions:
-    mov eax, INFINITE_SOLUTIONS ; return INFINITE_SOLUTIONS
+    mov rax, INFINITE_SOLUTIONS ; return INFINITE_SOLUTIONS
 
 _returnSolutions:
 	pop r13
