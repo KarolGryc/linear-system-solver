@@ -5,7 +5,9 @@
 #include <stdint.h>
 
 #define EPSILON 1e-9f
-
+#define NO_SOLUTIONS 0
+#define ONE_SOLUTION 1
+#define INFINITE_SOLUTIONS 2
 
 static inline bool is_zero(float arg)
 {
@@ -30,7 +32,7 @@ static inline int64_t first_non_zero_in_col(float* matrix, int64_t sizeX, int64_
     for (int64_t row = startRow; row < sizeY; row++)
     {
         float el = val_at(matrix, sizeX, row, col);
-        if (!is_zero(el)) 
+        if (!is_zero(el))
         {
             return row;
         }
@@ -51,70 +53,35 @@ static inline void swap_rows(float* matrix, int64_t sizeX, int64_t rowA, int64_t
 }
 
 
-static bool is_solvable(float* matrix, int64_t rows, int64_t cols)
+static int64_t solutions_in_system(float* matrix, int64_t rows, int64_t cols)
 {
-    int64_t var_num = cols - 1;
+    int64_t rank = 0;
+    int64_t num_of_variables = cols - 1;
 
-    for (int64_t rowIdx = 0; rowIdx < rows; rowIdx++)
+    for (int64_t row = 0; row < rows; row++) 
     {
-        bool all_zeros = true;
-        for (int64_t c = 0; c < var_num; c++)
+        bool non_zero_found = false;
+        for (int64_t col = 0; col < num_of_variables; col++) 
         {
-            float val = val_at(matrix, cols, rowIdx, c);
-            if (!is_zero(val))
+            float val = val_at(matrix, cols, row, col);
+            if (!is_zero(val)) 
             {
-                if (!all_zeros)
-                {
-                    return false;
-                }
-
-                all_zeros = false;
+                non_zero_found = true;
+                rank++;
+                break;
             }
         }
 
-        float solution = val_at(matrix, cols, rowIdx, var_num);
-        if (all_zeros && !is_zero(solution))
+        float solution_val = val_at(matrix, cols, row, num_of_variables);
+        if (!non_zero_found && !is_zero(solution_val))
         {
-            return false;
+            return NO_SOLUTIONS; 
         }
     }
 
-    return true;
-}
-
-static inline bool row_contains_only_zeros(float* matrix, int64_t cols, int64_t rowIdx)
-{
-    for (int64_t i = 0; i < cols; i++)
+    if (rank < num_of_variables)
     {
-        float val = val_at(matrix, cols, rowIdx, i);
-        if (!is_zero(val))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-#define NO_SOLUTIONS 0
-#define ONE_SOLUTION 1
-#define INFINITE_SOLUTIONS 2
-
-static int64_t solutions_in_system(float* matrix, int64_t rows, int64_t cols)
-{
-    int64_t variables_num = cols - 1;
-
-    if (!is_solvable(matrix, rows, cols))
-    {
-        return variables_num > rows ? INFINITE_SOLUTIONS : NO_SOLUTIONS;
-    }
-
-    for (int64_t row = 0; row < variables_num; row++)
-    {
-        if (row_contains_only_zeros(matrix, cols, row))
-        {
-            return INFINITE_SOLUTIONS;
-        }
+        return INFINITE_SOLUTIONS;
     }
 
     return ONE_SOLUTION;
@@ -153,6 +120,7 @@ typedef struct {
     int64_t endRow;
 } GaussJordanThreadData;
 
+
 static DWORD WINAPI rows_op_thread(LPVOID lpParam)
 {
     GaussJordanThreadData* data = (GaussJordanThreadData*)lpParam;
@@ -171,9 +139,12 @@ static DWORD WINAPI rows_op_thread(LPVOID lpParam)
         }
 
         float factor = val_at(matrix, cols, r, pivot_col_idx);
-        if (is_zero(factor)) {
-            continue;
-        }
+        
+        // For maximum performance we should skip if factor == 0
+        // For ease of testing AVX performance we skip this step
+        //if (is_zero(factor)) {
+        //    continue;
+        //}
 
         for (int64_t c = pivot_col_idx; c < cols; c++)
         {
@@ -184,6 +155,7 @@ static DWORD WINAPI rows_op_thread(LPVOID lpParam)
 
     return 0;
 }
+
 
 static void eliminate_multi_thread(float* matrix, int64_t rows, int64_t cols, int64_t pivor_row_idx, int64_t num_threads)
 {
@@ -223,6 +195,7 @@ static void eliminate_multi_thread(float* matrix, int64_t rows, int64_t cols, in
     }
 }
 
+
 // Solves in-place system of linear equations.
 // Returns:
 //  - 0: system has no solution,
@@ -231,6 +204,7 @@ static void eliminate_multi_thread(float* matrix, int64_t rows, int64_t cols, in
 __declspec(dllexport)
 int64_t solve_linear_system(float* matrix, int64_t rows, int64_t cols, int64_t num_threads)
 {
+
     int64_t variables_num = cols - 1;
     int64_t it_num = min(variables_num, rows);
     for (int64_t row = 0; row < it_num; row++)

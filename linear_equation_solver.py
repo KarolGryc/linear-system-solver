@@ -21,10 +21,11 @@ class LinearEquationSolver:
         
         # load the library, move to separate function
         dir = os.path.dirname(os.path.abspath(__file__))
+        lib_dir = str(dir) + r"\LinSysSolverLib\x64\Release"
         if lib == LibraryEnum.C_LIB:
-            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLibC\x64\Release\LinSysSolverLib.dll")
+            self._solver_dll = ctypes.cdll.LoadLibrary(f"{lib_dir}\\LinSysSolverC.dll")
         elif lib == LibraryEnum.ASM_LIB:
-            self._solver_dll = ctypes.cdll.LoadLibrary(str(dir) + r"\LinSysSolverLibAsm\x64\Release\LinSysSolverAsm.dll")
+            self._solver_dll = ctypes.cdll.LoadLibrary(f"{lib_dir}\\LinSysSolverAsm.dll")
         else:
             raise ValueError("Invalid library selected.")
 
@@ -75,6 +76,9 @@ def parse_linear_equation(equation : str) -> dict:
         raise ValueError(f"Equation {equation} must contain only one = sign.")
     left_side, right_side = equation.split('=')
     
+    if not left_side or not right_side:
+        raise ValueError(f"Invalid equation '{equation}' given.")
+
     def parse_side(side):
         side = side.replace('--', '+').replace('-', '+-')
         

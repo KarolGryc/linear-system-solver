@@ -11,11 +11,9 @@ GaussJordanThreadData ENDS
 
 .const
 	MAX_THREADS     EQU 64
-	NO_SOLUTIONS	EQU 0
-	ONE_SOLUTION	EQU 1
-	INF_SOLUTIONS	EQU 2
 	epsilon			REAL4 1.0e-9 
 	zeroVal			dd 0.0
+	oneVal			dd 1.0
 	maxThreads		dq MAX_THREADS
 	rmSignMask		dd 07FFFFFFFh
 	flipSignMask	dd 080000000h
@@ -37,8 +35,8 @@ GaussJordanThreadData ENDS
 	pivotRowIdx dq	0
     threadHandles   dq MAX_THREADS DUP(66)
     threadData      GaussJordanThreadData MAX_THREADS DUP(<51, 51>)
-.code
 
+.code
 ; <------------------------------------------------------->
 ; MACRO write_if_smaller
 ; saveTo = min(saveTo, compared)
@@ -94,15 +92,15 @@ ENDM
 ; PROCEDURE eliminate_on_thread
 ; Executes elimination on single thread
 eliminate_on_thread PROC
+	; preparing registers
 	push rsi
-	; RCX <-> threadDataPtr
-	; save data to registers
-	mov	rdx,	matrixAddr	; RDX = float* matrix
-	mov	r8,		numCols		; R8  = int cols (rowSize)
-	mov	r9,		pivotRowIdx	; R9  = int pivotRowidx (pivotColIdx)
+												; RCX <-> threadDataPtr
+	mov	rdx,	matrixAddr						; RDX = float* matrix
+	mov	r8,		numCols							; R8  = int cols (rowSize)
+	mov	r9,		pivotRowIdx						; R9  = int pivotRowIdx (pivotColIdx)
 	mov	r10,	QWORD PTR [rcx + startRowOff]	; R10 = int startRowIdx (currRow)
 	mov	r11,	QWORD PTR [rcx + endRowOff]		; R11 = int endRowIdx
-	movss xmm4, flipSignMask	; load flipping sign mask
+	movss xmm4, flipSignMask					; load flipping sign mask
 
 _elimStart:
 	cmp r10, r11	; if (currRow >= endRowIdx)
@@ -113,41 +111,40 @@ _elimStart:
 
 	mtx_off rax, r8, r10, r9 ; factor = value at (currRow, pivotColIdx)
 
-	movss xmm0, DWORD PTR [rdx + rax * floatSize] ; load factor to XMM0
-	movss xmm5, xmm0
-	is_zero xmm0	; if (isZero(val))
-	jbe _endLoop	;	continue (skip row)
+	movss xmm5, DWORD PTR [rdx + rax * floatSize] ; load factor to XMM0
 
-	xorps xmm5, xmm4			; flip the sign of xmm0
-	vbroadcastss ymm4, xmm5		; sign is flipped for vectorization
-								; factor vector
+	; For maximum performance we should skip if factor == 0
+	; For ease of testing AVX performance we skip this step
 
-	mov rcx, r8	; RCX = columns to eliminate
+	xorps xmm5, xmm4			; flip the sign of xmm5 to use vfmadd231ps
+	vbroadcastss ymm4, xmm5		; spread the -factor to ymm4
+								
+	mov rcx, r8					; RCX = columns to eliminate
 	sub rcx, r9
 
-	mtx_off rsi, r8, r9, r9 	; Load pivot first element offset
+	mtx_off rsi, r8, r9, r9 	; load pivot first element offset
 	_elimLoopAvx:
-		; Fully unrolled AVX loop
-		cmp rcx, 16
-		jl _elimLoopNormal
+		cmp rcx, ymmFloats * 2	; If there are not enough elements for AVX
+		jl _elimLoopNormal		; Eliminate tail without AVX
 
-		vmovups ymm2, ymmword ptr [rdx + rax * floatSize]
-		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize]
-		vfmadd231ps ymm2, ymm3, ymm4
-		vmovups ymmword ptr [rdx + rax * floatSize], ymm2
+		vmovups ymm2, ymmword ptr [rdx + rax * floatSize]			; load destiny
+		vmovups ymm0, ymmword ptr [rdx + rax * floatSize + ymmSize]	; load destiny + 64B
+		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize]			; load pivot
+		vmovups ymm1, ymmword ptr [rdx + rsi * floatSize + ymmSize]	; load pivot   + 64B
 
-		vmovups ymm2, ymmword ptr [rdx + rax * floatSize + ymmFloats * floatSize]
-		vmovups ymm3, ymmword ptr [rdx + rsi * floatSize + ymmFloats * floatSize]
-		vfmadd231ps ymm2, ymm3, ymm4
-		vmovups ymmword ptr [rdx + rax * floatSize + ymmFloats * floatSize], ymm2
+		vfmadd231ps ymm2, ymm3, ymm4	; destiny += -factor * pivot
+		vfmadd231ps ymm0, ymm1, ymm4
 
-		add rsi, ymmFloats * 2
+		vmovups ymmword ptr [rdx + rax * floatSize], ymm2			; store destiny
+		vmovups ymmword ptr [rdx + rax * floatSize + ymmSize], ymm0	; store destiny + 64B
+
+		add rsi, ymmFloats * 2	; move to next elements in pivot and destiny
 		add rax, ymmFloats * 2
-		sub rcx, ymmFloats * 2
+		sub rcx, ymmFloats * 2	; reduce number of elements left
 		jmp _elimLoopAvx		
 
 	_elimLoopNormal:
-		cmp rcx, 0			; perform if there are elements left
+		test rcx, rcx		; perform if there are elements left
 		jle _endLoop		; end if no left
 
 		movss xmm1, dword ptr [rdx + rsi * floatSize]	; load pivot value
@@ -162,11 +159,11 @@ _elimStart:
 		jmp _elimLoopNormal
 
 _endLoop:
-	inc r10
-	jmp _elimStart
+	inc r10			; increment row
+	jmp _elimStart	;
 
 _finishElim:
-	pop rsi
+	pop rsi			; returning values of registers
 	xor rax, rax	; return 0
 	ret
 eliminate_on_thread ENDP
@@ -178,7 +175,7 @@ eliminate_on_thread ENDP
 ; <------------------------------------------------------->
 ; PROCEDURE eliminate_multithread
 ; Does elimination with multiple threads
-eliminate_multithread PROC
+eliminate_multithread MACRO
 	push r12
 	push r13
 	push r14
@@ -187,43 +184,43 @@ eliminate_multithread PROC
 	push rdi
 	
 	; create threads
-	mov rax, numRows ; RAX = numRows
+	mov rax, numRows	; RAX = numRows
 	xor rdx, rdx
 	mov r12, numThreads ; R12 = numThreads
     div r12
-	mov r14, rax ; R14 = rows_per_thread
+	mov r14, rax		; R14 = rows_per_thread
 
-	xor r11, r11	; R11 = range start
-	mov r13, rdx	; R13 = endRow (first row has +remainder rows)
-	xor r15, r15	; R15 = loopIt = 0
+	xor r11, r11		; R11 = range start
+	mov r13, rdx		; R13 = endRow (first row has +remainder rows)
+	xor r15, r15		; R15 = loopIt = 0
 	mov rsi, offset threadData
 	mov rdi, offset threadHandles
 
 _threadCreateLoop:
-	cmp r15, r12
+	cmp r15, r12		; while (currThread < numThreads)
 	jge _threadCreateLoopEnd
 
-	add r13, r14	; endRow = startRow + rowsPerThread
+	add r13, r14		; endRow = startRow + rowsPerThread
 
-	mov qword ptr [rsi], r11	; fill thread data
+	mov qword ptr [rsi], r11		; fill thread data
 	mov qword ptr [rsi + 8], r13
 
-	sub rsp, 30h		; stack preparation
+	sub rsp, 30h					; stack preparation
 	xor rax, rax
-	mov [rsp+28h], rax  ; dwCreationFlags = 0
-	mov [rsp+20h], rax  ; lpThreadId = NULL
-	mov r9, rsi
-	mov r8, offset eliminate_on_thread
-	xor rdx, rdx
-	xor rcx, rcx		; CreateThread(NULL, 0, rows_op_thread, &threadData[i], 0, NULL)
-	call CreateThread
+	mov [rsp+28h], rax				; dwCreationFlags = 0
+	mov [rsp+20h], rax				; lpThreadId = NULL
+	mov r9, rsi						; lpParameter = currentThreadData
+	lea r8, [eliminate_on_thread]	; lpStartAddress = executedProcedureAddress
+	xor rdx, rdx					; dwStackSize = 0 (default)
+	xor rcx, rcx					; lpThreadAttributes = 0
+	call CreateThread	; CreateThread(NULL, 0, rows_op_thread, &threadData[i], 0, NULL)
 	add rsp, 30h
 
-	mov qword ptr [rdi + r15 * 8], rax ; rax contains handle
+	mov qword ptr [rdi + r15 * handleSize], rax ; rax contains handle
 
-	add rsi, sizeof GaussJordanThreadData ; move to next data structure
-	mov r11, r13	; start = end
-	inc r15			; ++loopIt
+	add rsi, sizeof GaussJordanThreadData		; move to next data structure
+	mov r11, r13		; start = end
+	inc r15				; ++loopIt
 	jmp _threadCreateLoop
 
 _threadCreateLoopEnd:
@@ -238,12 +235,12 @@ _threadCreateLoopEnd:
 	add rsp, 20h
 
 	; close threads
-	xor r15, r15
+	xor r15, r15			; R15 = closed thread index
 _closeThreadLoop:
-	cmp r15, r12
+	cmp r15, r12			; while (closed_thread_idx < num_threads)
 	jge _closeThreadLoopEnd
 
-	sub rsp, 20h
+	sub rsp, 20h	; CloseHandle(threadHandles[r15])
 	mov rcx, qword ptr[rdi + r15 * handleSize]
 	call CloseHandle
 	add rsp, 20h
@@ -259,8 +256,7 @@ _closeThreadLoopEnd:
 	pop r14
 	pop r13
 	pop r12
-	ret
-eliminate_multithread ENDP
+ENDM
 ; <------------------------------------------------------->
 
 
@@ -300,9 +296,11 @@ solve_linear_system PROC
 	push r15
 	push rsi
 	push rdi
+	push rbx
 
 	prepare_thread_array rcx, rdx, r8, r9	; save matrix data in variables
 
+	mov rbx, rcx				; RBX = matrix_address
 	mov r15, rdx				; R15 = num_of_rows
 	mov r12, r8					; R12 = num_of_iterations
 	dec r12						; variables_num = cols - 1
@@ -317,7 +315,7 @@ _solveLoopStart:
 	mtx_off r14, r8, r13, r13	; R14 = curr_pivot_element_offset
 								; pivot_el_row == pivot_el_col
 	
-	movss xmm0, dword ptr [rcx + r14 * floatSize] ; XMM0 = pivot_val
+	movss xmm0, dword ptr [rbx + r14 * floatSize] ; XMM0 = pivot_val
 
 	is_zero xmm0				; if (pivot_val == 0.0) swap rows
 	jnbe _pivot_normalization	; else goto normalization
@@ -331,7 +329,7 @@ _pivot_is_zero:
 		cmp rdx, r15	; if(it_row >= rowsNum)
 		jge _notFound	;	jump to not found
 
-		movss xmm0, dword ptr [rcx + r10 * floatSize]	; move element value into xmm0
+		movss xmm0, dword ptr [rbx + r10 * floatSize]	; move element value into xmm0
 		
 		is_zero xmm0 ; if (xmm0 == 0.0)
 		jnbe _found	 ;	jump to swap_rows
@@ -358,11 +356,11 @@ _pivot_is_zero:
 			test r10, r10
 			jz _simpleSwap
 
-			vmovups ymm0, ymmword ptr[rcx + rsi * floatSize]	; load row A
-			vmovups ymm1, ymmword ptr [rcx + rdi * floatSize]	; load row B
+			vmovups ymm0, ymmword ptr[rbx + rsi * floatSize]	; load row A
+			vmovups ymm1, ymmword ptr [rbx + rdi * floatSize]	; load row B
 
-			vmovups ymmword ptr [rcx + rsi * floatSize], ymm1	; save row B to A
-			vmovups ymmword ptr [rcx + rdi * floatSize], ymm0	; save row A to B
+			vmovups ymmword ptr [rbx + rsi * floatSize], ymm1	; save row B to A
+			vmovups ymmword ptr [rbx + rdi * floatSize], ymm0	; save row A to B
 
 			add rsi, ymmFloats	; move to next elements A
 			add rdi, ymmFloats	; move to next elements B
@@ -374,11 +372,11 @@ _pivot_is_zero:
 			test r11, r11
 			jz _pivot_normalization
 
-			movss xmm0, dword ptr [rcx + rsi * floatSize]	; load el A
-			movss xmm1, dword ptr [rcx + rdi * floatSize]	; load el B
+			movss xmm0, dword ptr [rbx + rsi * floatSize]	; load el A
+			movss xmm1, dword ptr [rbx + rdi * floatSize]	; load el B
 
-			movss dword ptr [rcx + rsi * floatSize], xmm1	; save el B to A
-			movss dword ptr [rcx + rdi * floatSize], xmm0	; save el A to B
+			movss dword ptr [rbx + rsi * floatSize], xmm1	; save el B to A
+			movss dword ptr [rbx + rdi * floatSize], xmm0	; save el A to B
 
 			inc rsi	; move to next element A
 			inc rdi	; move to next element B
@@ -389,14 +387,13 @@ _pivot_is_zero:
 _pivot_normalization:
 	
 	mov rsi, r14	; RSI = currentPivotOffset	
-
 	mov r10, r8		; R10 = iterations with AVX normalization
 	sub r10, r13
-	mov r11, r10	; R11 = iterations of simplenormalization
+	mov r11, r10	; R11 = iterations of simple normalization
 	shr r10, 3		
 	and r11, 7
 
-	movss xmm0, dword ptr [rcx + r14 * floatSize] ; XMM0 = current pivot value
+	movss xmm0, dword ptr [rbx + r14 * floatSize] ; XMM0 = current pivot value
 
 	vbroadcastss ymm0, xmm0 ; YMM0 vector of pivot values
 
@@ -404,9 +401,9 @@ _pivot_normalization:
 		test r10, r10
 		jz _simpleNormalization
 
-		vmovups ymm1, ymmword ptr [rcx + rsi * floatSize] ; load 8 elements
-		vdivps ymm1, ymm1, ymm0							  ; normalize
-		vmovups ymmword ptr [rcx + rsi * floatSize], ymm1 ; load back
+		vmovups ymm1, ymmword ptr [rbx + rsi * floatSize]	; load 8 elements
+		vdivps ymm1, ymm1, ymm0								; normalize
+		vmovups ymmword ptr [rbx + rsi * floatSize], ymm1	; load back
 			
 		add rsi, ymmFloats	; move to next elements
 		dec r10				; reduce iterations left
@@ -416,22 +413,20 @@ _pivot_normalization:
 		test r11, r11
 		jz _elimination
 			
-		movss xmm1, dword ptr [rcx + rsi * floatSize]	; load element 
-		divss xmm1, xmm0								; normalize
-		movss dword ptr [rcx + rsi * floatSize], xmm1	; load back
+		movss xmm1, dword ptr [rbx + rsi * floatSize]		; load element 
+		divss xmm1, xmm0									; normalize
+		movss dword ptr [rbx + rsi * floatSize], xmm1		; load back
 
-		inc rsi	; move to next element
-		dec r11	; reduce iterations left
+		inc rsi				; move to next element
+		dec r11				; reduce iterations left
 		jmp _simpleNormalization
 
 _elimination:
-	push r8		; save rowSize
-	push rcx	; save matrix ptr
+	push r8					; save rowSize
 
-	mov pivotRowIdx, r13		; set global current pivot row
-	call eliminate_multithread	; eliminate using multi-threading
+	mov pivotRowIdx, r13	; set global current pivot row
+	eliminate_multithread	; eliminate using multi-threading
 	
-	pop rcx
 	pop r8
 	inc r13					; ++curr_row
 	jmp _solveLoopStart		; _equatiosIteration loop
@@ -448,7 +443,8 @@ _solveLoopEnd:
 	mov r8, numCols
 	call number_of_solutions
 
-	pop rdi	; retrieve registers
+	pop rbx ; retrieve registers
+	pop rdi	
 	pop rsi
 	pop r15
 	pop r14
@@ -463,28 +459,28 @@ solve_linear_system ENDP
 ; <------------------------------------------------------->
 ; PROCEDURE remove_close_zeros
 ; Changes numbers that are close to 0.0 to 0.0.
+; RCX = float* matrix_ptr
+; RDX = num_rows
+; R8 = num_cols
 remove_close_zeros PROC
-	; RCX = float* matrix_ptr
-	; RDX = num_rows
-	; R8 = num_cols
+	mov rax, r8		; RAX = last_column_idx (first row)
+	dec rax			; last_column_idx = num_cols - 1
+	imul rdx, r8	; RDX = num_of_elements (num_rows * num_cols)
 
-	mov rax, r8
-	dec rax
-	imul rdx, r8
 	movss xmm0, dword ptr [zeroVal]	; XMM0 = zeroVal
+
 _removingZerosStart:
 	cmp rax, rdx
 	jge _removingZerosFinish
 
 	movss xmm2, dword ptr [rcx + rax * floatSize]
 
-	is_zero xmm2			; if (is_zero(xmm2)) set 0.0
+	is_zero xmm2			; if (is_zero(XMM2)) set 0.0
 	ja _removingZerosNextIt ; else continue
-	movss xmm1, xmm0
-	movss dword ptr [rcx + rax * floatSize], xmm1
+	movss dword ptr [rcx + rax * floatSize], xmm0
 
 _removingZerosNextIt:
-	add rax, r8
+	add rax, r8		; move last_column_idx to next element
 	jmp _removingZerosStart
 
 _removingZerosFinish:
@@ -492,152 +488,74 @@ _removingZerosFinish:
 remove_close_zeros ENDP
 ; <------------------------------------------------------->
 
-; !!!
-; !!!
-; !!!
-; PROCEDURES BELOW NEED TO BE CHANGED
-; !!!
-; !!!
-; !!!
 
 ; <------------------------------------------------------->
-; PROCEDURE is_sovable
-; If solved matrix has solutions returns 1 in RAX else returns 0.
-is_sovable PROC
-	; RCX = float* matrix_ptr
-	; RDX = num_rows
-	; R8 = num_cols
+; PROCEDURE solutions_in_system
+; Gives number of solutions in solver linear system.
+; RCX = float* matrix_ptr
+; RDX = num_rows
+; R8 = num_cols
+solutions_in_system PROC
+    ; Constants
+    NO_SOLUTIONS        equ 0
+    ONE_SOLUTION        equ 1
+    INFINITE_SOLUTIONS  equ 2
 
-	dec rdx ; iterate from end, start from num_rows - 1
-
-	mov r9, r8	; R9 = numVariables
-	dec r9
-
-	xor rax, rax ; RAX = currElOffset (we are starting from the first one)
-
-_checkingSolutionsStart:
-	cmp rdx, 0	; if (rowIdx < 0) break
-	jl _checkingSolutionsEnd
-
-	mov r10, 1 ; R10 = allZeros
-	xor r11, r11 ; R11 = columnIdx
-
-	_chkSolutionColumnIt:
-		cmp r11, r9
-		jge _chkSolutionColumnEnd
-
-		movss xmm0, dword ptr [rcx + rax * floatSize]
-
-		is_zero xmm0
-		jbe _checkedIsZero
-
-		cmp r10, 1		; if (allZeros == false)
-		je _notAllZeros ;	allZeros = false
-		xor rax, rax	; else
-		ret				;	return false
-
-		_notAllZeros:
-			xor r10, r10; allZeros = false
-
-		_checkedIsZero:
-			inc rax		; move to next element
-			inc r11		; iterate to next column
-			jmp _chkSolutionColumnIt
-	_chkSolutionColumnEnd:
-
-	test r10, r10				; if (allZeros == false)
-	jz _checkingSolutionsItEnd	;	continue
-
-	movss xmm0, dword ptr [rcx + rax * floatSize]
-	is_zero xmm0				; if (xmm0 == 0.0)
-	jbe _checkingSolutionsItEnd	;	continue
-
-	xor rax, rax			; else
-	ret						; return false
-
-_checkingSolutionsItEnd:
-	inc rax
-	dec rdx
-	jmp _checkingSolutionsStart
-
-_checkingSolutionsEnd:
-	mov rax, 1	; return true
-	ret
-is_sovable ENDP
-; <------------------------------------------------------->
-
-
-; <------------------------------------------------------->
-; PROCEDURE number_of_solutions
-; Checks number of solutions in system.
-; RCX = float* matrixPtr
-; RDX = int64_t numRows
-; R8 = in64_t numCols
-; Returns:
-;	- 0: there are no solutions
-;	- 1: there is exactly one solution
-;	- 2: there is infinite number of solutions
-number_of_solutions PROC
-	push r12
+	push r12				; store registers
 	push r13
-	push r14
-	push r15
 
-	mov r12, rcx ; R12 = matrixPtr
-	mov r13, rdx ; R13 = numRows
-	mov r14, r8  ; R14 = numCols
-	mov r15, r14 ; R15 = variablesNum
-	dec r15		 ; variablesNum = numCols - 1
+    mov r9, r8				; R9 = variables_num
+    dec r9                  ; variables_num = cols - 1
+    xor r10, r10			; R10 = rank = 0
+    xor r11, r11			; R11 = row = 0
 
-	call is_sovable		; if (is not solvable)
-	test rax, rax	
-	jnz _checkInfiniteSolutions
-	cmp r15, r13				; return variablesNum > numRows ?
-	jg _infiniteSolutionResult	; INF_SOLUTIONS : 
-	jmp _noSolutionResult		; NO_SOLUTIONS 
+_loopRows:
+	cmp r11, rdx            ; if (curr_row >= num_rows)
+	jge _checkRank          ;     goto CheckRank
 
-_checkInfiniteSolutions:
-	
-	xor r10, r10	; R10 = currRow
-_checkInfRowLoop:	; while (currRow < variablesNum)
-	cmp r10, r15
-	jge _oneSolutionResult
+	xor r12, r12            ; R12 = curr_col = 0
+	xor rax, rax			; RAX = non_zero_found = false
 
-	xor r11, r11	; R11 = currCol
-	_checkRowOnlyZeroLoop:	; Check if row contains only zeros
-		cmp r11, r14
-		jge _infiniteSolutionResult
+	mtx_off r13, r8, r11, 0
+	_checkColumns:
+		cmp r12, r9			; while (curr_col < num_of_variables) 
+		jge _endCheckCols
 
-		mov rdx, [r12 + r11 * floatSize] ; if matrix.at(row,col) == 0 continue
-		test rdx, rdx
-		jnz _checkRowOnlyZeroEnd
+		movss xmm0, dword ptr [rcx + r13 * floatSize]
+		is_zero xmm0
+		jbe _nextItCheckColumns
 
-		inc r11
-		jmp _checkRowOnlyZeroLoop
+		mov rax, 1
+		inc r10
+		jmp _enchCheckCols
 
-	_checkRowOnlyZeroEnd:
-	add r12, r14	; matrixPtr += numCols (move to next row)
-	inc r10
-	jmp _checkInfRowLoop
+	_nextItCheckColumns:
+		inc r12
+		inc r13
+		jmp _checkColumns
+	_endCheckCols:
 
-_noSolutionResult:
-	mov rax, NO_SOLUTIONS
-	jmp _numberOfSolutionsCleanup
 
-_oneSolutionResult:
-	mov rax, ONE_SOLUTION
-	jmp _numberOfSolutionsCleanup
+_checkRank:
+    cmp r10, r9               ; if rank < num_of_variables
+    jl InfiniteSolutions      ;     return INFINITE_SOLUTIONS
 
-_infiniteSolutionResult:
-	mov rax, INF_SOLUTIONS
+_oneSolution:
+    mov eax, ONE_SOLUTION     ; return ONE_SOLUTION
+    jmp _returnSolutions
 
-_numberOfSolutionsCleanup:
-	pop r15
-	pop r14
+_noSolutions:
+    mov eax, NO_SOLUTIONS     ; return NO_SOLUTIONS
+    jmp _returnSolutions
+
+_infiniteSolutions:
+    mov eax, INFINITE_SOLUTIONS ; return INFINITE_SOLUTIONS
+
+_returnSolutions:
 	pop r13
 	pop r12
-	ret
-number_of_solutions ENDP
+    ret
+solutions_in_system ENDP
 ; <------------------------------------------------------->
 
 END
